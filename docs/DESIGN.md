@@ -57,6 +57,13 @@ formulas and relative paths.
   `.nb2cleanpdf/<ts>/failed/NNN_<slug>.ipynb`.
 - Backups on by default: `.nb2cleanpdf/<ts>/backup/<relpath>` (old outputs may be irreplaceable).
 - `exec.py` return codes: 0 ok, 1 cell error, 2 other, 3 skipped, 4 timeout, 5 dead kernel.
+- **No sandbox (decided).** Notebook code runs with the user's full permissions, same trust
+  model as Jupyter's *Run All*; the README says so. The kernel-env tweaks above are for
+  reproducibility, not security. Rejected: `sandbox-exec` (deprecated, macOS-only; Linux would
+  need bwrap/firejail), containers (break the venv/uv/Chrome pipeline), pre-run "dangerous
+  code" scans (trivially bypassed, false assurance), a per-run warning banner (noise).
+  Notebooks legitimately need network, `~/.cache` and data outside the project, so any
+  profile tight enough to matter breaks real ones.
 
 ## Project directory and paths
 

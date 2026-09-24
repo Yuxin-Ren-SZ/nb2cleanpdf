@@ -25,6 +25,9 @@ while (( $# )); do
     *)          print -u2 "unknown argument '$1'"; exit 2 ;;
   esac
 done
+# $ENGINE becomes part of a path that is rm -rf'd below
+[[ $ENGINE == (auto|chrome|chrome-cli|webpdf|latex|none) ]] ||
+  { print -u2 "invalid --engine '$ENGINE' (auto|chrome|chrome-cli|webpdf|latex|none)"; exit 2 }
 
 WORK=$ROOT/tests/.work/$ENGINE
 P=$WORK/proj
