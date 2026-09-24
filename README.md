@@ -35,7 +35,7 @@ This installs the latest code from `main`. To pin a
 [release](https://github.com/Yuxin-Ren-SZ/nb2cleanpdf/releases), add `--version`:
 
 ```zsh
-curl -fsSL https://raw.githubusercontent.com/Yuxin-Ren-SZ/nb2cleanpdf/main/install.sh | sh -s -- --version 0.2.0
+curl -fsSL https://raw.githubusercontent.com/Yuxin-Ren-SZ/nb2cleanpdf/main/install.sh | sh -s -- --version 0.3.0
 ```
 
 or from a clone:

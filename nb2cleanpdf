@@ -24,7 +24,7 @@ zmodload zsh/datetime || { print -u2 "zsh/datetime module unavailable"; exit 1 }
 autoload -Uz is-at-least
 
 SCRIPT=${0:t}
-VERSION=0.2.0            # bumped in the release commit; the tag is v$VERSION
+VERSION=0.3.0            # bumped in the release commit; the tag is v$VERSION
 
 # ---------- colours / messages ---------------------------------------------
 if [[ -t 1 ]]; then
