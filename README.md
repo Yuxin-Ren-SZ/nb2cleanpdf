@@ -11,11 +11,12 @@
 **English** | [简体中文](README.zh-CN.md)
 
 Export **clean PDFs** of Jupyter notebooks: every notebook in a project is re-run
-from scratch with the project's **uv** virtualenv, then exported to PDF (into `PDF/`).
+from scratch with the project's **uv** virtualenv (or a venv / conda environment you
+choose), then exported to PDF (into `PDF/`).
 
 - finds all `.ipynb` files (skips hidden dirs, `.venv`, `node_modules`, checkpoints)
 - lets you unselect notebooks (fzf picker, or a numbered menu) and filter with `-i` / `-e` patterns
-- runs each notebook in a fresh kernel from `./.venv`, with outputs cleared first and cwd set to the notebook's folder
+- runs each notebook in a fresh kernel from `./.venv` (or `--env local PATH` / `--env conda NAME`), with outputs cleared first and cwd set to the notebook's folder
 - only overwrites a notebook when it ran without errors (atomic replace, backup kept in `.nb2cleanpdf/`)
 - exports PDFs into `PDF/` (mirroring the folder layout) by reusing the Chrome/Edge/Brave you already have installed
 - checks every dependency at start-up and offers to install what's missing
@@ -51,7 +52,7 @@ The installer only writes `<bin-dir>/nb2cleanpdf`, never overwrites a file that 
 nb2cleanpdf (unless `--force`), and tells you if the bin dir is not on your `PATH`.
 
 Requirements: zsh, [uv](https://docs.astral.sh/uv/), and a uv-created `.venv` in the
-project. Everything else (jupyter, fzf, …) is checked at start-up, with the command that
+project — or another environment, see [Environments](#environments). Everything else (jupyter, fzf, …) is checked at start-up, with the command that
 installs it.
 
 ## Usage
@@ -69,8 +70,8 @@ nb2cleanpdf -V                       # installed version
 ```
 
 The project directory (default: the current one) holds `.venv`, the notebooks, `PDF/`
-and the run records in `.nb2cleanpdf/`. Paths given in options (`-o`, `--venv`,
-`--browser`) are relative to where you run the command.
+and the run records in `.nb2cleanpdf/`. Paths given in options (`-o`, `--env`,
+`--browser`, `--config`) are relative to where you run the command.
 
 Always quote patterns. A plain word matches anywhere in the path; a glob with `/`
 matches the whole relative path; a glob without `/` matches the file name.
@@ -78,6 +79,54 @@ matches the whole relative path; a glob without `/` matches the file name.
 **Only run notebooks you trust.** Every code cell is executed with your user's permissions,
 exactly like *Run All* in Jupyter — there is no sandbox. Look through notebooks from
 unknown sources before processing them.
+
+## Environments
+
+Notebooks run in the project's uv venv by default. Pick another environment with `--env`:
+
+```zsh
+nb2cleanpdf                                  # --env uv: ./.venv, must be created by uv
+nb2cleanpdf --env=uv:envs/py312              # a uv venv elsewhere (same as --venv DIR)
+nb2cleanpdf --env local ./venv               # any venv: python -m venv, virtualenv, poetry, pdm…
+nb2cleanpdf --env conda myenv                # conda / mamba / micromamba env, by name…
+nb2cleanpdf --env conda ~/miniforge3/envs/x  # …or by prefix
+```
+
+- A conda env is activated the way `conda activate` does it, including its
+  `etc/conda/activate.d` scripts and `conda env config vars`.
+- Missing packages are installed with the environment's own tool — `uv`, the venv's `pip`,
+  or `conda` / `mamba` / `micromamba install -c conda-forge`. The exact command is shown
+  first and only runs if you agree (or with `--install-deps`).
+- If the environment doesn't exist or is of another kind, nb2cleanpdf stops and prints
+  the command to use instead; it never falls back to another environment.
+- The `chrome` PDF engine still needs uv (it runs playwright from uv's cache).
+
+## Config file
+
+Store the environment and other defaults in a config file, read **only** when you pass
+`--config`. Command-line options override it.
+
+```toml
+# .nb2cleanpdf.toml  (in the project; or any file: --config path/to/file.toml)
+env = "conda"
+env_spec = "myenv"               # conda name/prefix, or venv path (relative to this file)
+engine = "chrome"
+output_dir = "PDF"
+timeout = 900
+exclude = ["scratch", "(#i)*draft*"]
+allow_errors = false
+backup = true
+```
+
+```zsh
+nb2cleanpdf --config                 # reads ./.nb2cleanpdf.toml
+nb2cleanpdf --config ci.toml -e eda  # -e replaces the file's exclude list
+```
+
+Keys: `env`, `env_spec`, `engine`, `browser`, `output_dir`, `timeout`, `include`,
+`exclude`, `allow_errors`, `backup`. The format is a subset of TOML: top-level
+`key = value` lines with quoted strings, integers, `true`/`false` or one-line string
+arrays. Unknown keys and anything else are errors.
 
 ## PDF engines
 

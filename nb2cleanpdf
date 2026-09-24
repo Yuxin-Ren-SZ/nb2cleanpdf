@@ -2,12 +2,14 @@
 # ---------------------------------------------------------------------------
 # nb2cleanpdf — export clean PDFs of Jupyter notebooks: re-execute every
 # notebook below the project directory (default: the current one) from scratch
-# with the project's uv virtualenv, then export each one to PDF (into ./PDF).
+# with the project's uv virtualenv (or a venv / conda env of your choice), then
+# export each one to PDF (into ./PDF).
 #
 #   nb2cleanpdf -h        for usage
 #
 # Requirements (checked at start-up; missing ones can be installed on the spot):
 #   required : a uv-created venv (./.venv) containing nbformat, nbclient, ipykernel
+#              (or --env local PATH / --env conda NAME|PREFIX)
 #   PDF      : nbconvert + an installed Chrome/Edge/Brave/Chromium, driven by
 #              playwright in a uv-cached env outside the venv ("chrome", default)
 #              or the same browser's headless print CLI ("chrome-cli")
@@ -47,15 +49,33 @@ strip_ansi() { if (( IS_TTY )); then cat; else command sed $'s/\e\\[[0-9;?]*[A-Z
 usage() {
   cat <<EOF
 ${B}${SCRIPT}${N} — export clean PDFs of Jupyter notebooks: re-run every notebook
-below the project directory from scratch with its uv virtualenv (.venv), then
-export each one to PDF.
+below the project directory from scratch with its uv virtualenv (.venv) — or
+another venv / conda environment — then export each one to PDF.
 
 ${B}Usage:${N} ${SCRIPT} [options] [DIR]
        ${SCRIPT} clean [-n] [-y] [--keep N] [--pdfs [-o DIR] [-i/-e PATTERN]] [DIR]
        ${SCRIPT} -h | -V        help / version
 
   DIR is the project directory (default: the current directory). Paths given
-  in options (-o, --venv, --browser) are relative to where you run the command.
+  in options (-o, --env, --browser, --config) are relative to where you run the
+  command; paths in a config file are relative to that file.
+
+${B}Environment${N}  (where the notebooks run)
+      --env uv            default: the uv-created venv ./.venv
+      --env=uv:DIR        a uv-created venv elsewhere (same as --venv DIR)
+      --env local PATH    any standard venv (python -m venv, virtualenv, poetry, pdm…)
+      --env conda NAME    a conda / mamba / micromamba env, by name or prefix path
+                          (activated like 'conda activate', incl. activate.d scripts)
+  Missing packages are installed with the environment's own tool (uv, pip, or
+  conda/mamba/micromamba from conda-forge) — shown first, run only if you agree.
+
+${B}Config file${N}  (read only with --config; command-line options override it)
+      --config [FILE]     read FILE (default: .nb2cleanpdf.toml in the project)
+  Top-level 'key = value' lines (a TOML subset). Keys: env, env_spec, engine,
+  browser, output_dir, timeout, include, exclude, allow_errors, backup, e.g.
+      env = "conda"
+      env_spec = "myenv"
+      exclude = ["*scratch*", "(#i)*draft*"]
 
 ${B}Selection${N}
   -i, --include PATTERN   only keep notebooks matching PATTERN (repeatable, OR-ed)
@@ -66,10 +86,11 @@ ${B}Selection${N}
 ${B}Execution${N}
   -t, --timeout SEC       per-cell timeout in seconds (default: no timeout)
       --allow-errors      don't stop a notebook at the first failing cell
+                          (--no-allow-errors: stop, overriding the config)
       --no-exec           don't re-run notebooks, only export PDFs
       --no-backup         don't back up notebooks before overwriting them
-      --venv DIR          virtualenv to use (default: .venv)
-      --sync              run 'uv sync' before starting
+                          (--backup: do, overriding the config)
+      --sync              run 'uv sync' before starting (uv environments only)
 
 ${B}Dependencies${N}
   Missing dependencies are listed with the command that installs each one;
@@ -83,7 +104,7 @@ ${B}PDF export${N}
                           installed, else webpdf
                           chrome     : reuse your installed Chrome/Edge/Brave/Chromium,
                                        driven by playwright (kept in uv's cache, not
-                                       added to your venv)
+                                       added to your environment)
                           chrome-cli : same browser via its headless --print-to-pdf
                                        (no playwright; waits less precisely for MathJax)
                           webpdf     : playwright's own Chromium (~/Library/Caches/ms-playwright)
@@ -122,36 +143,64 @@ EOF
 
 # ---------- argument parsing -------------------------------------------------
 typeset -a INCLUDES EXCLUDES
-VENV_OPT=.venv VENV_SET=0 PROJECT_OPT= TIMEOUT=-1 ENGINE=auto PDF_DIR= BROWSER_OPT=${NB2CLEANPDF_BROWSER:-} PDF_TIMEOUT=300
-MODE=run KEEP_RUNS=0 KEEP_SET=0 CLEAN_PDFS=0
+ENV_KIND=uv ENV_SPEC= PROJECT_OPT= TIMEOUT=-1 ENGINE=auto PDF_DIR= BROWSER_OPT=${NB2CLEANPDF_BROWSER:-} PDF_TIMEOUT=300
+MODE=run KEEP_RUNS=0 KEEP_SET=0 CLEAN_PDFS=0 CONFIG_SET=0 CONFIG_FILE=
 ASSUME_YES=0 INSTALL_DEPS=0 DRY_RUN=0 ALLOW_ERRORS=0 DO_EXEC=1 DO_PDF=1 DO_BACKUP=1 DO_SYNC=0
+# options given on the command line; a config file (--config) only fills the others
+typeset -A CLI_SET
+[[ -n $BROWSER_OPT ]] && CLI_SET[browser]=1      # $NB2CLEANPDF_BROWSER counts as given
+typeset -A CFG_FROM                               # key -> 1 when the value came from the config
 
 need_arg() { [[ $# -ge 2 && -n $2 ]] || die "option '$1' needs an argument" }
+ENV_KINDS='uv, local or conda'
+set_env() {   # $1 = KIND or KIND:SPEC (from --env / --env=)
+  [[ -n ${CLI_SET[env]:-} ]] && die "choose the environment once (--env / --venv given twice)"
+  CLI_SET[env]=1
+  ENV_KIND=${1%%:*} ENV_SPEC=
+  [[ $1 == *:* ]] && ENV_SPEC=${1#*:}
+  [[ $ENV_KIND == (uv|local|conda) ]] || die "--env must be $ENV_KINDS (got '$ENV_KIND')"
+}
 
 while (( $# )); do
   case $1 in
     -h|--help)        usage; exit 0 ;;
     -V|--version)     print -r -- "$SCRIPT $VERSION"; exit 0 ;;
-    -i|--include)     need_arg "$@"; INCLUDES+=("$2"); shift 2 ;;
-    --include=*)      INCLUDES+=("${1#*=}"); shift ;;
-    -e|--exclude)     need_arg "$@"; EXCLUDES+=("$2"); shift 2 ;;
-    --exclude=*)      EXCLUDES+=("${1#*=}"); shift ;;
-    -t|--timeout)     need_arg "$@"; TIMEOUT=$2; shift 2 ;;
-    --timeout=*)      TIMEOUT=${1#*=}; shift ;;
-    -o|--output-dir)  need_arg "$@"; PDF_DIR=$2; shift 2 ;;
-    --output-dir=*)   PDF_DIR=${1#*=}; shift ;;
-    --venv)           need_arg "$@"; VENV_OPT=$2; VENV_SET=1; shift 2 ;;
-    --venv=*)         VENV_OPT=${1#*=}; VENV_SET=1; shift ;;
-    --engine)         need_arg "$@"; ENGINE=$2; shift 2 ;;
-    --engine=*)       ENGINE=${1#*=}; shift ;;
-    --browser)        need_arg "$@"; BROWSER_OPT=$2; shift 2 ;;
-    --browser=*)      BROWSER_OPT=${1#*=}; shift ;;
+    -i|--include)     need_arg "$@"; INCLUDES+=("$2"); CLI_SET[include]=1; shift 2 ;;
+    --include=*)      INCLUDES+=("${1#*=}"); CLI_SET[include]=1; shift ;;
+    -e|--exclude)     need_arg "$@"; EXCLUDES+=("$2"); CLI_SET[exclude]=1; shift 2 ;;
+    --exclude=*)      EXCLUDES+=("${1#*=}"); CLI_SET[exclude]=1; shift ;;
+    -t|--timeout)     need_arg "$@"; TIMEOUT=$2; CLI_SET[timeout]=1; shift 2 ;;
+    --timeout=*)      TIMEOUT=${1#*=}; CLI_SET[timeout]=1; shift ;;
+    -o|--output-dir)  need_arg "$@"; PDF_DIR=$2; CLI_SET[output_dir]=1; shift 2 ;;
+    --output-dir=*)   PDF_DIR=${1#*=}; CLI_SET[output_dir]=1; shift ;;
+    --env)            need_arg "$@"; set_env "$2"; shift 2
+                      # local and conda need a path / name: take the next argument
+                      if [[ $ENV_KIND == (local|conda) && -z $ENV_SPEC ]]; then
+                        [[ $# -ge 1 && -n $1 && $1 != -* ]] || \
+                          die "--env $ENV_KIND needs a $([[ $ENV_KIND == local ]] && print path || print 'name or path'), e.g. --env $ENV_KIND $([[ $ENV_KIND == local ]] && print ./venv || print myenv)"
+                        ENV_SPEC=$1; shift
+                      fi ;;
+    --env=*)          set_env "${1#*=}"; shift ;;
+    --venv)           need_arg "$@"; set_env "uv:$2"; shift 2 ;;
+    --venv=*)         set_env "uv:${1#*=}"; shift ;;
+    --config)         CONFIG_SET=1; shift
+                      # optional FILE: only an existing file (the project DIR is a directory)
+                      if [[ $# -ge 1 && -f $1 ]]; then CONFIG_FILE=$1; shift
+                      elif [[ $# -ge 1 && $1 == *.toml ]]; then die "config file not found: '$1'"; fi ;;
+    --config=*)       CONFIG_SET=1; CONFIG_FILE=${1#*=}
+                      [[ -n $CONFIG_FILE ]] || die "option '--config=' needs a file"; shift ;;
+    --engine)         need_arg "$@"; ENGINE=$2; CLI_SET[engine]=1; shift 2 ;;
+    --engine=*)       ENGINE=${1#*=}; CLI_SET[engine]=1; shift ;;
+    --browser)        need_arg "$@"; BROWSER_OPT=$2; CLI_SET[browser]=1; shift 2 ;;
+    --browser=*)      BROWSER_OPT=${1#*=}; CLI_SET[browser]=1; shift ;;
     -y|--yes)         ASSUME_YES=1; shift ;;
     -n|--dry-run)     DRY_RUN=1; shift ;;
-    --allow-errors)   ALLOW_ERRORS=1; shift ;;
+    --allow-errors)   ALLOW_ERRORS=1; CLI_SET[allow_errors]=1; shift ;;
+    --no-allow-errors) ALLOW_ERRORS=0; CLI_SET[allow_errors]=1; shift ;;
     --no-exec)        DO_EXEC=0; shift ;;
     --no-pdf)         DO_PDF=0; shift ;;
-    --no-backup)      DO_BACKUP=0; shift ;;
+    --backup)         DO_BACKUP=1; CLI_SET[backup]=1; shift ;;
+    --no-backup)      DO_BACKUP=0; CLI_SET[backup]=1; shift ;;
     --sync)           DO_SYNC=1; shift ;;
     --install-deps)   INSTALL_DEPS=1; shift ;;
     --keep)           need_arg "$@"; KEEP_RUNS=$2; KEEP_SET=1; shift 2 ;;
@@ -167,36 +216,152 @@ while (( $# )); do
   esac
 done
 
+# Paths given on the command line are relative to where you are; paths in a
+# config file are relative to the file; everything else (.venv, notebooks, PDF/,
+# .nb2cleanpdf/) is relative to the project dir.
+START_DIR=$PWD
+[[ -n $PDF_DIR ]] && PDF_DIR=${PDF_DIR:a}
+[[ -n $BROWSER_OPT ]] && BROWSER_OPT=${BROWSER_OPT:a}
+[[ -n $CONFIG_FILE ]] && CONFIG_FILE=${CONFIG_FILE:a}
+# a spec with '/' is a path (a conda env name has none)
+[[ -n $ENV_SPEC && ( $ENV_KIND != conda || $ENV_SPEC == */* ) ]] && ENV_SPEC=${ENV_SPEC:a}
+if [[ -n $PROJECT_OPT ]]; then
+  cd -- $PROJECT_OPT || die "cannot enter project directory '$PROJECT_OPT'"
+fi
+
+# ---------- config file (only with --config) ------------------------------------
+# A flat subset of TOML, parsed here because it is read before any Python is
+# chosen: `key = value` lines, # comments; values are "strings" / 'strings',
+# integers, true / false, or one-line arrays of strings. CLI > config > default.
+CFG_KEYS=(env env_spec engine browser output_dir timeout include exclude allow_errors backup)
+cfg_err() { die "$CONFIG_FILE:$1: $2" }
+cfg_string() {   # consume a quoted string from the front of CFG_REST into REPLY
+  local q=${CFG_REST[1]} out= c
+  integer i=2
+  [[ $q == [\"\'] ]] || return 1
+  while (( i <= $#CFG_REST )); do
+    c=${CFG_REST[i]}
+    if [[ $c == $q ]]; then REPLY=$out; CFG_REST=${CFG_REST[i+1,-1]}; return 0; fi
+    if [[ $q == \" && $c == \\ ]]; then
+      (( i++ )); c=${CFG_REST[i]}
+      case $c in n) c=$'\n' ;; t) c=$'\t' ;; \"|\\) ;; *) return 1 ;; esac
+    fi
+    out+=$c; (( i++ ))
+  done
+  return 1
+}
+cfg_path() {     # $1 = path from the config -> absolute, relative to the config file
+  local p=$1
+  [[ $p == \~ || $p == \~/* ]] && p=$HOME${p#\~}
+  [[ $p == /* ]] || p=${CONFIG_FILE:h}/$p
+  print -r -- ${p:a}
+}
+load_config() {
+  local line key type val
+  local -a arr
+  local -A seen
+  integer n=0
+  [[ -f $CONFIG_FILE ]] || die "config file not found: '$CONFIG_FILE' (--config)"
+  [[ -r $CONFIG_FILE ]] || die "config file not readable: '$CONFIG_FILE'"
+  while IFS= read -r line || [[ -n $line ]]; do
+    (( n++ ))
+    line=${line##[[:space:]]#}
+    [[ -z $line || $line == \#* ]] && continue
+    [[ $line == \[* ]] && cfg_err $n "sections are not supported — use top-level 'key = value' lines"
+    [[ $line =~ '^([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=[[:space:]]*(.*)$' ]] || \
+      cfg_err $n "expected 'key = value'"
+    key=$match[1] CFG_REST=$match[2]
+    (( ${CFG_KEYS[(Ie)$key]} )) || cfg_err $n "unknown key '$key' (known: ${(j:, :)CFG_KEYS})"
+    [[ -n ${seen[$key]:-} ]] && cfg_err $n "'$key' is set twice (also on line $seen[$key])"
+    seen[$key]=$n
+    arr=()
+    if [[ $CFG_REST == \[* ]]; then
+      type=array CFG_REST=${CFG_REST#\[}
+      while true; do
+        CFG_REST=${CFG_REST##[[:space:]]#}
+        [[ $CFG_REST == \]* ]] && { CFG_REST=${CFG_REST#\]}; break }
+        cfg_string || cfg_err $n "'$key': arrays may only hold quoted strings, on one line"
+        arr+=("$REPLY")
+        CFG_REST=${CFG_REST##[[:space:]]#}
+        if [[ $CFG_REST == ,* ]]; then CFG_REST=${CFG_REST#,}
+        elif [[ $CFG_REST != \]* ]]; then cfg_err $n "'$key': expected ',' or ']' in the array"; fi
+      done
+    elif cfg_string; then type=string val=$REPLY
+    elif [[ $CFG_REST =~ '^(true|false)(.*)$' ]]; then type=bool val=$match[1] CFG_REST=$match[2]
+    elif [[ $CFG_REST =~ '^(-?[0-9]+)(.*)$' ]]; then type=int val=$match[1] CFG_REST=$match[2]
+    else cfg_err $n "'$key': value must be a quoted string, an integer, true/false or [\"…\", …]"
+    fi
+    CFG_REST=${CFG_REST##[[:space:]]#}
+    [[ -z $CFG_REST || $CFG_REST == \#* ]] || cfg_err $n "unexpected text after the value: $CFG_REST"
+
+    case $key:$type in
+      (env|env_spec|engine|browser|output_dir):string|timeout:int|(allow_errors|backup):bool) ;;
+      (include|exclude):string) type=array arr=("$val") ;;
+      (include|exclude):array) ;;
+      *) cfg_err $n "'$key' can't be $type" ;;
+    esac
+    # the environment is chosen as a whole: --env/--venv overrides both env keys
+    [[ -n ${CLI_SET[${key%_spec}]:-} ]] && continue
+    CFG_FROM[$key]=1
+    case $key in
+      env)          ENV_KIND=$val ;;
+      env_spec)     ENV_SPEC=$val ;;
+      engine)       ENGINE=$val ;;
+      browser)      BROWSER_OPT=$(cfg_path $val) ;;
+      output_dir)   PDF_DIR=$(cfg_path $val) ;;
+      timeout)      TIMEOUT=$val ;;
+      include)      INCLUDES=("${arr[@]}") ;;
+      exclude)      EXCLUDES=("${arr[@]}") ;;
+      allow_errors) [[ $val == true ]]; ALLOW_ERRORS=$(( ! $? )) ;;
+      backup)       [[ $val == true ]]; DO_BACKUP=$(( ! $? )) ;;
+    esac
+  done <$CONFIG_FILE
+  if (( $+CFG_FROM[env] || $+CFG_FROM[env_spec] )); then
+    [[ $ENV_KIND == (uv|local|conda) ]] || cfg_err $seen[env] "env must be $ENV_KINDS (got '$ENV_KIND')"
+    [[ -n $ENV_SPEC || $ENV_KIND == uv ]] || die "$CONFIG_FILE: env = \"$ENV_KIND\" needs env_spec (a $([[ $ENV_KIND == local ]] && print path || print 'name or path'))"
+    [[ -n $ENV_SPEC && ( $ENV_KIND != conda || $ENV_SPEC == */* ) ]] && ENV_SPEC=$(cfg_path $ENV_SPEC)
+  fi
+}
+if (( CONFIG_SET )); then
+  [[ -n $CONFIG_FILE ]] || CONFIG_FILE=$PWD/.nb2cleanpdf.toml
+  load_config
+  info "config: ${B}${CONFIG_FILE/#$START_DIR\//}${N}"
+fi
+# where a value came from, for error messages: $1 = config key, $2 = CLI option
+src() { (( $+CFG_FROM[$1] )) && print -r -- "'$1' in ${CONFIG_FILE/#$START_DIR\//}" || print -r -- $2 }
+[[ $ENV_KIND == (local|conda) && -z $ENV_SPEC ]] && \
+  die "$(src env --env) $ENV_KIND needs a $([[ $ENV_KIND == local ]] && print path || print 'name or path'), e.g. --env=$ENV_KIND:$([[ $ENV_KIND == local ]] && print ./venv || print myenv)"
+
 [[ $KEEP_RUNS == <-> ]] || die "--keep must be a non-negative integer (got '$KEEP_RUNS')"
 if [[ $MODE == run ]] && (( KEEP_SET || CLEAN_PDFS )); then
   die "--keep and --pdfs only apply to '$SCRIPT clean'"
 fi
-[[ $TIMEOUT == (-|)<-> ]] || die "--timeout must be an integer (got '$TIMEOUT')"
+[[ $TIMEOUT == (-|)<-> ]] || die "$(src timeout --timeout) must be an integer (got '$TIMEOUT')"
 [[ $ENGINE == (auto|chrome|chrome-cli|webpdf|latex) ]] || \
-  die "--engine must be auto, chrome, chrome-cli, webpdf or latex (got '$ENGINE')"
+  die "$(src engine --engine) must be auto, chrome, chrome-cli, webpdf or latex (got '$ENGINE')"
 (( DO_EXEC || DO_PDF )) || die "--no-exec together with --no-pdf leaves nothing to do"
 (( DO_EXEC )) || DO_BACKUP=0
+(( DO_SYNC )) && [[ $ENV_KIND != uv ]] && \
+  die "--sync runs 'uv sync' and only applies to a uv environment (the environment is $(src env --env) $ENV_KIND)"
 
-# Paths given on the command line are relative to where you are; everything
-# else (.venv, notebooks, PDF/, .nb2cleanpdf/) is relative to the project dir.
-START_DIR=$PWD
-[[ -n $PDF_DIR ]] && PDF_DIR=${PDF_DIR:a}
-[[ -n $BROWSER_OPT ]] && BROWSER_OPT=${BROWSER_OPT:a}
-(( VENV_SET )) && VENV_OPT=${VENV_OPT:a}
-if [[ -n $PROJECT_OPT ]]; then
-  cd -- $PROJECT_OPT || die "cannot enter project directory '$PROJECT_OPT'"
-fi
 [[ -z $PDF_DIR ]] && PDF_DIR=$PWD/PDF
 # commands shown for manual installation must also work from where you are
 CD_PFX=; [[ $PWD != $START_DIR ]] && CD_PFX="cd ${(q)PWD} && "
 
-# ---------- shared helpers: notebook discovery + filters ----------------------
-VENV=${VENV_OPT:a}
+# The environment's directory, when known without asking a conda manager (used
+# to keep it out of notebook discovery); a conda env given by name is resolved
+# later (resolve_env).
+ENV_DIR=
+case $ENV_KIND in
+  uv)    ENV_DIR=${ENV_SPEC:-$PWD/.venv} ;;
+  local) ENV_DIR=$ENV_SPEC ;;
+  conda) [[ $ENV_SPEC == /* ]] && ENV_DIR=$ENV_SPEC ;;
+esac
 typeset -a ALL NBS
 discover() {
   local -a prune=( -name '.?*' -o -name node_modules -o -name __pycache__ -o -name site-packages )
-  local venv_rel=${VENV#$PWD/}
-  [[ $venv_rel != /* ]] && prune+=( -o -path "./$venv_rel" )
+  local env_rel=${ENV_DIR#$PWD/}
+  [[ -n $ENV_DIR && $env_rel != /* ]] && prune+=( -o -path "./$env_rel" )
   [[ -n $PDF_DIR && $PDF_DIR == $PWD/* ]] && prune+=( -o -path "./${PDF_DIR#$PWD/}" )
   local -a out
   out=( ${(0)"$(command find . -mindepth 1 \( -type d \( "${prune[@]}" \) -prune \) \
@@ -405,22 +570,87 @@ if [[ $MODE == clean ]]; then
   exit $?
 fi
 
-# ---------- 1. the uv virtualenv (required) -----------------------------------
-if [[ ! -d $VENV ]]; then
-  print -ru2 -- "${ER}error:${EN} no virtualenv found at '$VENV_OPT' in $PWD"
-  print -ru2 -- "       This script runs the notebooks with a venv created by uv. Create one with:"
-  hint "uv init --bare && uv add --dev jupyter   # new project"
-  hint "uv sync                                  # existing pyproject.toml"
-  hint "uv venv && uv pip install jupyter        # plain venv, no pyproject"
-  exit 1
-fi
-[[ -f $VENV/pyvenv.cfg ]] || die "'$VENV_OPT' is not a virtualenv (no pyvenv.cfg)"
-if ! command grep -Eq '^[[:space:]]*uv[[:space:]]*=' $VENV/pyvenv.cfg; then
-  die "'$VENV_OPT' was not created by uv (pyvenv.cfg has no 'uv =' entry).
-       Recreate it with uv:  rm -rf '$VENV_OPT' && uv venv   (then reinstall deps, e.g. uv sync)"
-fi
-PY=$VENV/bin/python
-[[ -x $PY ]] || die "'$PY' is missing or not executable — the venv looks broken; recreate it with 'uv venv'"
+# ---------- 1. the Python environment (required) ------------------------------
+# uv (default: ./.venv, must be created by uv), local (any standard venv) or
+# conda (a conda / mamba / micromamba env, by name or prefix).
+ENV_SRC=$(src env --env)
+ENV_LABEL=${ENV_SPEC:-.venv}; [[ $ENV_LABEL == /* ]] && ENV_LABEL=${ENV_LABEL/#$START_DIR\//}
+CONDA_MGR=     # conda / mamba / micromamba found on this machine (may stay empty)
+
+other_env_hints() {
+  print -ru2 -- "       Or use another environment:"
+  hint "$SCRIPT --env local PATH     # python -m venv / virtualenv / poetry / pdm"
+  hint "$SCRIPT --env conda NAME     # conda / mamba / micromamba (name or prefix)"
+}
+find_conda_mgr() {
+  local c
+  for c in ${CONDA_EXE:-} ${MAMBA_EXE:-} conda mamba micromamba; do
+    if [[ $c == /* ]]; then [[ -x $c ]] && { CONDA_MGR=$c; return 0 }
+    elif (( $+commands[$c] )); then CONDA_MGR=$c; return 0; fi
+  done
+  return 1
+}
+conda_prefix_of() {   # $1 = env name -> prefix (from '<mgr> env list --json')
+  local json p
+  local -a envs
+  json=$("$CONDA_MGR" env list --json 2>/dev/null) || return 1
+  json=${${json#*\"envs\"*\[}%%\]*}          # just the "envs": [...] array, any layout
+  while [[ $json =~ '"(/[^"]*)"' ]]; do envs+=$match[1]; json=${json[MEND+1,-1]}; done
+  for p in $envs; do
+    if [[ $1 == base ]]; then [[ $p != */envs/* ]] && { print -r -- $p; return 0 }
+    elif [[ ${p:t} == $1 ]]; then print -r -- $p; return 0; fi
+  done
+  return 1
+}
+
+case $ENV_KIND in
+  uv)
+    if [[ ! -d $ENV_DIR ]]; then
+      print -ru2 -- "${ER}error:${EN} no virtualenv found at '$ENV_LABEL' in $PWD"
+      print -ru2 -- "       By default notebooks run with a venv created by uv. Create one with:"
+      hint "uv init --bare && uv add --dev jupyter   # new project"
+      hint "uv sync                                  # existing pyproject.toml"
+      hint "uv venv && uv pip install jupyter        # plain venv, no pyproject"
+      other_env_hints
+      exit 1
+    fi
+    [[ -d $ENV_DIR/conda-meta ]] && \
+      die "'$ENV_LABEL' is a conda environment — use:  $SCRIPT --env conda ${(q)ENV_LABEL}"
+    [[ -f $ENV_DIR/pyvenv.cfg ]] || die "'$ENV_LABEL' is not a virtualenv (no pyvenv.cfg)"
+    command grep -Eq '^[[:space:]]*uv[[:space:]]*=' $ENV_DIR/pyvenv.cfg || \
+      die "'$ENV_LABEL' was not created by uv (pyvenv.cfg has no 'uv =' entry). Either use it as it is:
+         $SCRIPT --env local ${(q)ENV_LABEL}
+       or recreate it with uv:  rm -rf ${(q)ENV_LABEL} && uv venv   (then reinstall deps, e.g. uv sync)"
+    ;;
+  local)
+    [[ -d $ENV_DIR ]] || die "no virtualenv found at '$ENV_LABEL' ($ENV_SRC)"
+    [[ -d $ENV_DIR/conda-meta ]] && \
+      die "'$ENV_LABEL' is a conda environment, not a venv — use:  $SCRIPT --env conda ${(q)ENV_LABEL}"
+    [[ -f $ENV_DIR/pyvenv.cfg ]] || \
+      die "'$ENV_LABEL' is not a virtualenv (no pyvenv.cfg) — create one with:  python3 -m venv ${(q)ENV_LABEL}"
+    ;;
+  conda)
+    find_conda_mgr
+    if [[ -z $ENV_DIR ]]; then       # given by name
+      [[ -n $CONDA_MGR ]] || die "conda environment '$ENV_SPEC' ($ENV_SRC): no conda, mamba or micromamba found to look it up.
+       Give its prefix instead (--env conda /path/to/env), or install one, e.g.:  brew install micromamba"
+      ENV_DIR=$(conda_prefix_of $ENV_SPEC) || {
+        print -ru2 -- "${ER}error:${EN} no conda environment named '$ENV_SPEC' ($ENV_SRC). Known environments:"
+        hint "${CONDA_MGR:t} env list"
+        exit 1
+      }
+      ENV_LABEL="$ENV_SPEC ($ENV_DIR)"
+    else
+      [[ -d $ENV_DIR ]] || die "no conda environment at '$ENV_LABEL' ($ENV_SRC)"
+      [[ -d $ENV_DIR/conda-meta ]] || {
+        [[ -f $ENV_DIR/pyvenv.cfg ]] && die "'$ENV_LABEL' is a venv, not a conda environment — use:  $SCRIPT --env local ${(q)ENV_LABEL}"
+        die "'$ENV_LABEL' is not a conda environment (no conda-meta/)"
+      }
+    fi
+    ;;
+esac
+PY=$ENV_DIR/bin/python
+[[ -x $PY ]] || die "'$PY' is missing or not executable — the environment '$ENV_LABEL' looks broken (or has no Python: install one into it)"
 
 
 # ---------- 2. dependency checks (+ optional auto-install) -------------------
@@ -437,16 +667,38 @@ if [[ -z $BREW ]]; then
 fi
 NO_BREW_NOTE="Homebrew not found — install it first from https://brew.sh (then re-run)"
 
-VENV_REL=${VENV#$PWD/}
-if [[ -f pyproject.toml ]]; then
-  UV_ADD="uv add --dev"
-  [[ $VENV != $PWD/.venv ]] && UV_ADD="UV_PROJECT_ENVIRONMENT=${(q)VENV_REL} $UV_ADD"
-  UV_ADD="$CD_PFX$UV_ADD"
-  UV_ADD_NOTE="adds it to the dev dependency group in pyproject.toml / uv.lock"
-else
-  UV_ADD="${CD_PFX}uv pip install --python ${(q)VENV_REL}"
-  UV_ADD_NOTE=
-fi
+ENV_REL=${ENV_DIR#$PWD/}
+# How packages get into the environment — always its own manager. INST_UV=1:
+# the installer is uv (so uv is a dependency); INST_AUTO=0: we can only show the
+# command (no manager found).
+INST_UV=0 INST_AUTO=1 INST_NOTE= INST_WEBPDF="'nbconvert[webpdf]'"
+case $ENV_KIND in
+  uv)
+    INST_UV=1
+    if [[ -f pyproject.toml ]]; then
+      INST="uv add --dev"
+      [[ $ENV_DIR != $PWD/.venv ]] && INST="UV_PROJECT_ENVIRONMENT=${(q)ENV_REL} $INST"
+      INST="$CD_PFX$INST"
+      INST_NOTE="adds it to the dev dependency group in pyproject.toml / uv.lock"
+    else
+      INST="${CD_PFX}uv pip install --python ${(q)ENV_REL}"
+    fi ;;
+  local)
+    if "$PY" -m pip --version &>/dev/null; then
+      INST="$CD_PFX${(q)ENV_REL}/bin/python -m pip install"
+    else
+      INST="${CD_PFX}uv pip install --python ${(q)ENV_REL}" INST_UV=1
+      INST_NOTE="the venv has no pip; uv installs into it"
+    fi ;;
+  conda)
+    INST="${CONDA_MGR:t} install -y -p ${(q)ENV_DIR} -c conda-forge" INST_WEBPDF=nbconvert-webpdf
+    if [[ -z $CONDA_MGR ]]; then
+      INST="conda install -y -p ${(q)ENV_DIR} -c conda-forge" INST_AUTO=0
+      INST_NOTE="no conda / mamba / micromamba found — run it with the one that manages this env"
+    elif [[ $CONDA_MGR == /* && ${commands[${CONDA_MGR:t}]:-} != $CONDA_MGR ]]; then
+      INST="${(q)CONDA_MGR} install -y -p ${(q)ENV_DIR} -c conda-forge"   # not the one on PATH
+    fi ;;
+esac
 
 # Packages nbconvert's LaTeX template needs (BasicTeX lacks several of them).
 TEX_STY=( tcolorbox.sty pgf.sty environ.sty trimspaces.sty upquote.sty adjustbox.sty
@@ -507,10 +759,11 @@ PYEOF
 wants_picker() { (( ! ASSUME_YES )) && [[ -t 0 && -t 1 ]] }
 
 # The chrome engine drives the browser with playwright from an ephemeral env in
-# uv's cache, built on the venv's interpreter: the venv, pyproject.toml and
-# uv.lock stay untouched, and nothing is downloaded after the first time.
+# uv's cache, built on the environment's interpreter (any kind): the environment,
+# pyproject.toml and uv.lock stay untouched, and nothing is downloaded after the
+# first time.
 PW_REQ='playwright>=1.49'
-PW_RUN="uv run --no-project --python ${(q)VENV_REL}/bin/python --with ${(qq)PW_REQ}"
+PW_RUN="uv run --no-project --python ${(q)ENV_REL}/bin/python --with ${(qq)PW_REQ}"
 pw_ok() { (( $+commands[uv] )) && eval "$PW_RUN --offline --quiet python -c 'import playwright'" &>/dev/null }
 
 typeset -a DEP_NAME DEP_REQ DEP_AUTO DEP_CMD DEP_WHY DEP_NOTE
@@ -529,21 +782,23 @@ check_deps() {   # $1 = sync | all
   else
     (( DO_EXEC )) && for m in nbformat nbclient ipykernel; do py_has $m || mods+=$m; done
     (( DO_PDF ))  && { py_has nbconvert || mods+=nbconvert }
-    (( $#mods )) && need_uv=1
-    (( DO_PDF )) && [[ $ENGINE == webpdf ]] && ! py_has playwright && need_uv=1
+    (( $#mods && INST_UV )) && need_uv=1
+    (( DO_PDF && INST_UV )) && [[ $ENGINE == webpdf ]] && ! py_has playwright && need_uv=1
     (( DO_PDF )) && [[ $ENGINE == chrome ]] && ! pw_ok && { pw=0; need_uv=1 }
   fi
 
-  # uv is the installer for everything that goes into the venv (and for playwright)
-  local uv_auto=1
+  # uv installs into uv envs (and pip-less venvs) and always runs playwright for
+  # the chrome engine; other environments are installed into by their own manager
+  local uv_auto=1 env_auto=$INST_AUTO
   if (( need_uv && ! $+commands[uv] )); then
-    add_dep uv 1 $has_brew "brew install uv" "Python package manager used to install into the venv" "$brew_note"
+    add_dep uv 1 $has_brew "brew install uv" "Python package manager (installs packages / runs playwright)" "$brew_note"
     uv_auto=$has_brew
   fi
+  (( INST_UV )) && env_auto=$uv_auto
   [[ $1 == sync ]] && return
 
-  (( $#mods )) && add_dep jupyter 1 $uv_auto "$UV_ADD jupyter" \
-      "venv lacks: ${mods[*]}" "$UV_ADD_NOTE"
+  (( $#mods )) && add_dep jupyter 1 $env_auto "$INST jupyter" \
+      "the environment lacks: ${mods[*]}" "$INST_NOTE"
 
   local no_chrome_note=
   (( ENGINE_WAS_AUTO )) && no_chrome_note="no Chrome/Edge/Brave found to reuse; alternatively: brew install --cask google-chrome"
@@ -553,16 +808,16 @@ check_deps() {   # $1 = sync | all
         "browser used to print PDFs (or pass --browser PATH)" "$brew_note"
     (( pw )) || add_dep playwright 1 $uv_auto "$CD_PFX$PW_RUN python -c 'import playwright'" \
         "drives the browser to print PDFs" \
-        "~300 MB in uv's cache (shared, outside your venv); pyproject.toml / uv.lock are not changed"
+        "~300 MB in uv's cache (shared, outside your environment); pyproject.toml / uv.lock are not changed"
   elif (( DO_PDF )) && [[ $ENGINE == webpdf ]]; then
     if ! py_has playwright; then
-      add_dep "nbconvert[webpdf]" 1 $uv_auto "$UV_ADD 'nbconvert[webpdf]'" \
-          "playwright, for HTML→PDF rendering" "$UV_ADD_NOTE"
-      add_dep chromium 1 $uv_auto "$CD_PFX${(q)VENV_REL}/bin/python -m playwright install chromium" \
+      add_dep "nbconvert[webpdf]" 1 $env_auto "$INST $INST_WEBPDF" \
+          "playwright, for HTML→PDF rendering" "$INST_NOTE"
+      add_dep chromium 1 $env_auto "$CD_PFX${(q)ENV_REL}/bin/python -m playwright install chromium" \
           "headless browser that prints the PDF" \
           "shared by all projects in ~/Library/Caches/ms-playwright${no_chrome_note:+; $no_chrome_note}"
     elif ! chromium_ok; then
-      add_dep chromium 1 1 "$CD_PFX${(q)VENV_REL}/bin/python -m playwright install chromium" \
+      add_dep chromium 1 1 "$CD_PFX${(q)ENV_REL}/bin/python -m playwright install chromium" \
           "headless browser that prints the PDF" \
           "shared by all projects in ~/Library/Caches/ms-playwright${no_chrome_note:+; $no_chrome_note}"
     fi
@@ -661,7 +916,7 @@ if (( ! DRY_RUN )); then
     [[ -f pyproject.toml ]] || die "--sync needs a pyproject.toml in $PWD"
     ensure_deps sync
     info "uv sync"
-    UV_PROJECT_ENVIRONMENT=$VENV uv sync || die "'uv sync' failed"
+    UV_PROJECT_ENVIRONMENT=$ENV_DIR uv sync || die "'uv sync' failed"
   fi
   ensure_deps all
   if (( DO_PDF )); then
@@ -815,21 +1070,51 @@ sys.exit(rc)
 PYEOF
 fi
 
+# ---------- activate the environment -----------------------------------------
+# so `!python`, `!pip`, subprocess, etc. inside notebooks resolve to it.
+# conda: what `conda activate` does, independent of which manager made the env —
+# CONDA_* and PATH, the env's `conda env config vars` (conda-meta/state), then
+# its etc/conda/activate.d/*.sh scripts (GDAL, CUDA, R… set variables there).
+# Those run in sh; the resulting environment is imported here.
+conda_activate() {
+  local out kv k name=$ENV_SPEC
+  local -a state
+  [[ $name == */* ]] && name=$ENV_DIR
+  state=( ${(0)"$("$PY" -c 'import json, sys
+try: ev = json.load(open(sys.argv[1])).get("env_vars", {})
+except (OSError, ValueError): ev = {}
+sys.stdout.write("".join(f"{k}={v}\0" for k, v in ev.items()))' $ENV_DIR/conda-meta/state)"} )
+  out=$(env -u VIRTUAL_ENV CONDA_PREFIX=$ENV_DIR CONDA_DEFAULT_ENV=$name CONDA_SHLVL=1 \
+          PATH="$ENV_DIR/bin:$PATH" "${state[@]}" sh -c '
+    for f in "$CONDA_PREFIX"/etc/conda/activate.d/*.sh; do [ -f "$f" ] && . "$f"; done >&2
+    exec "$1" -c "import os, sys; sys.stdout.write(\"\".join(k + \"=\" + v + \"\\0\" for k, v in os.environ.items()))"' \
+          sh "$PY") || die "activating the conda environment failed (a script in ${ENV_DIR}/etc/conda/activate.d?)"
+  unset VIRTUAL_ENV
+  for kv in ${(0)out}; do
+    k=${kv%%=*}
+    [[ $k == [A-Za-z_][A-Za-z0-9_]# && $k != (_|PWD|OLDPWD|SHLVL) ]] || continue
+    [[ ${parameters[$k]:-} == (*readonly*|array*|association*) ]] && continue
+    [[ ${(P)k-} == "${kv#*=}" ]] && continue
+    export "$kv"
+  done
+}
+zmodload zsh/parameter
+if [[ $ENV_KIND == conda ]]; then conda_activate
+else export VIRTUAL_ENV=$ENV_DIR PATH="$ENV_DIR/bin:$PATH"; fi
+
 if (( DO_EXEC )); then
-  # A throw-away kernelspec that points at the venv's interpreter, isolated from
-  # any user/system kernelspecs that might shadow "python3".
+  # A throw-away kernelspec that points at the environment's interpreter, isolated
+  # from any user/system kernelspecs that might shadow "python3".
   KERNEL_NAME="nb2cleanpdf-$$"
   mkdir -p $TMP/jupyter/kernels/$KERNEL_NAME
-  "$PY" - $TMP/jupyter/kernels/$KERNEL_NAME/kernel.json "$PY" <<'PYEOF' || die "could not write kernelspec"
+  "$PY" - $TMP/jupyter/kernels/$KERNEL_NAME/kernel.json "$PY" "nb2cleanpdf ($ENV_KIND env)" <<'PYEOF' || die "could not write kernelspec"
 import json, sys
 json.dump({"argv": [sys.argv[2], "-m", "ipykernel_launcher", "-f", "{connection_file}"],
-           "display_name": "nb2cleanpdf (uv venv)", "language": "python",
+           "display_name": sys.argv[3], "language": "python",
            "metadata": {"debugger": False}}, open(sys.argv[1], "w"))
 PYEOF
   export JUPYTER_PATH="$TMP/jupyter${JUPYTER_PATH:+:$JUPYTER_PATH}"
   export JUPYTER_PLATFORM_DIRS=1 PYDEVD_DISABLE_FILE_VALIDATION=1
-  # make `!python`, `!pip`, subprocess, etc. inside notebooks resolve to the venv
-  export VIRTUAL_ENV=$VENV PATH="$VENV/bin:$PATH"
   # env vars that make runs non-reproducible (MPLBACKEND=macosx would pop windows
   # instead of rendering inline plots)
   unset MPLBACKEND PYTHONSTARTUP

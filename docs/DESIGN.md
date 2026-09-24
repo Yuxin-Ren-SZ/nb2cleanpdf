@@ -5,6 +5,8 @@
 1. Find every `.ipynb` below the current directory.
 2. Re-run them one by one, cleanly, to reproduce a clean result.
 3. Run them with the **uv-created** venv in the current directory; error out if there is none.
+   Other environments (any venv, conda/mamba/micromamba) only when chosen explicitly (`--env`,
+   or `env` in a config file read with `--config`).
 4. Export all notebooks to PDF; report every error.
 5. After discovery, the user can **unselect** notebooks.
 6. `-i` / `-e` include/exclude patterns.
@@ -35,6 +37,48 @@ formulas and relative paths.
 10. Run loop.
 11. Summary.
 
+## Environments (`--env`)
+
+- Kinds: `uv` (default `./.venv`; `--env=uv:DIR` = old `--venv DIR`), `local PATH` (any dir with
+  `pyvenv.cfg`), `conda NAME|PREFIX` (dir with `conda-meta/`; a spec containing `/` is a prefix).
+- Two-token form: `local` / `conda` always take the next argument; `uv` never does, because
+  `--env uv DIR` would be ambiguous with the project-DIR positional.
+- **No fallback, ever**: a missing/wrong-kind environment is an error with the exact command to
+  use instead (uv venv that isn't uv-made → `--env local`; `conda-meta/` → `--env conda`; …). An
+  activated shell env (`$CONDA_PREFIX`, `$VIRTUAL_ENV`) is never picked up implicitly.
+- The conda manager (`$CONDA_EXE`, `$MAMBA_EXE`, `conda`, `mamba`, `micromamba`) is only needed to
+  resolve a name (`env list --json`) and to install; a prefix runs without one.
+- conda activation is done by nb2cleanpdf itself, not by the manager's shell hook (manager-
+  independent, testable without conda): `CONDA_PREFIX`/`CONDA_DEFAULT_ENV`/`CONDA_SHLVL`, `PATH`,
+  `env_vars` from `conda-meta/state`, then `etc/conda/activate.d/*.sh` sourced in `sh`; the
+  resulting environment is dumped NUL-separated by the env's python and exported (readonly and
+  array params skipped). `VIRTUAL_ENV` is unset.
+- Installing missing packages: the environment's own tool — uv env: `uv add --dev` /
+  `uv pip install`; local: `<env>/bin/python -m pip install` (uv pip if the venv has no pip);
+  conda: `<mgr> install -y -p PREFIX -c conda-forge` (`nbconvert[webpdf]` → `nbconvert-webpdf`).
+  `-y` is fine because nb2cleanpdf already shows the command and asks. No manager found → the
+  command is shown with `conda` but not auto-run.
+- uv is needed only for uv envs / pip-less venvs and for the `chrome` engine (playwright runs
+  from uv's cache on the env's interpreter). `--sync` is uv-only (error otherwise).
+
+## Config file (`--config`)
+
+- **Opt-in**: read only with `--config` (→ `<project>/.nb2cleanpdf.toml`) or `--config FILE`.
+  A plain run never reads a config, so behaviour never depends on a file you may not notice.
+  `--config`'s optional FILE is taken only if the next argument is an existing regular file (the
+  project DIR is always a directory); a next argument ending in `.toml` that doesn't exist is an error.
+- Precedence **CLI > config > default**; `$NB2CLEANPDF_BROWSER` counts as CLI. `--env`/`--venv`
+  override `env` and `env_spec` together; CLI `-i`/`-e` replace (not extend) the config lists.
+  `--backup` / `--no-allow-errors` exist so config booleans can be overridden.
+- Keys: env, env_spec, engine, browser, output_dir, timeout, include, exclude, allow_errors,
+  backup. One-shot actions (`-y`, `-n`, `--no-exec`, `--no-pdf`, `--sync`, `--install-deps`)
+  are CLI-only.
+- Format: a flat TOML subset parsed in zsh — it must be read before any Python is chosen, so no
+  `tomllib`; and not `[tool.nb2cleanpdf]` in pyproject.toml (section-splitting a full TOML file in
+  zsh is fragile; conda projects often have no pyproject). Unknown key, duplicate, section,
+  wrong type or stray text → error with `file:line`. Values are validated like CLI values and
+  errors name the key and file. Relative paths are relative to the config file.
+
 ## Venv and reproducibility
 
 - "Created by uv": `pyvenv.cfg` has a `uv = …` line and `bin/python` is executable.
@@ -44,7 +88,8 @@ formulas and relative paths.
 - Throw-away kernelspec `nb2cleanpdf-$$` in `$TMP/jupyter/kernels/` (prepended to `JUPYTER_PATH`)
   so a user-level `python3` kernelspec can't shadow the venv interpreter. The notebook's
   original kernelspec metadata is restored before saving.
-- Kernel env: `VIRTUAL_ENV` + `PATH` point at the venv (`!pip`, `subprocess` resolve to it);
+- Kernel env: `VIRTUAL_ENV` + `PATH` point at the venv (`!pip`, `subprocess` resolve to it;
+  conda: activated as described under Environments);
   `MPLBACKEND` (macosx would open windows) and `PYTHONSTARTUP` unset; warning if `PYTHONPATH`
   is set; `JUPYTER_PLATFORM_DIRS=1`, `PYDEVD_DISABLE_FILE_VALIDATION=1`.
 - Non-Python kernels are skipped (rc 3).
