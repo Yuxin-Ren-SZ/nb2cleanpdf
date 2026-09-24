@@ -1,9 +1,10 @@
 #!/usr/bin/env zsh
 # ---------------------------------------------------------------------------
-# nbrerun — cleanly re-execute every Jupyter notebook below the current
-# directory with the project's uv virtualenv, then export each one to PDF.
+# nb2cleanpdf — export clean PDFs of Jupyter notebooks: re-execute every
+# notebook below the project directory (default: the current one) from scratch
+# with the project's uv virtualenv, then export each one to PDF (into ./PDF).
 #
-#   nbrerun -h        for usage
+#   nb2cleanpdf -h        for usage
 #
 # Requirements (checked at start-up; missing ones can be installed on the spot):
 #   required : a uv-created venv (./.venv) containing nbformat, nbclient, ipykernel
@@ -44,11 +45,15 @@ strip_ansi() { if (( IS_TTY )); then cat; else command sed $'s/\e\\[[0-9;?]*[A-Z
 
 usage() {
   cat <<EOF
-${B}${SCRIPT}${N} — cleanly re-run all Jupyter notebooks below the current directory
-with the uv virtualenv in ./.venv, then export each to PDF.
+${B}${SCRIPT}${N} — export clean PDFs of Jupyter notebooks: re-run every notebook
+below the project directory from scratch with its uv virtualenv (.venv), then
+export each one to PDF.
 
-${B}Usage:${N} ${SCRIPT} [options]
-       ${SCRIPT} clean [-n] [-y] [--keep N] [--pdfs [-o DIR] [-i/-e PATTERN]]
+${B}Usage:${N} ${SCRIPT} [options] [DIR]
+       ${SCRIPT} clean [-n] [-y] [--keep N] [--pdfs [-o DIR] [-i/-e PATTERN]] [DIR]
+
+  DIR is the project directory (default: the current directory). Paths given
+  in options (-o, --venv, --browser) are relative to where you run the command.
 
 ${B}Selection${N}
   -i, --include PATTERN   only keep notebooks matching PATTERN (repeatable, OR-ed)
@@ -82,13 +87,14 @@ ${B}PDF export${N}
                           webpdf     : playwright's own Chromium (~/Library/Caches/ms-playwright)
                           latex      : xelatex + pandoc
       --browser PATH      browser for chrome/chrome-cli (binary or .app bundle;
-                          also \$NBRERUN_BROWSER)
+                          also \$NB2CLEANPDF_BROWSER)
   -o, --output-dir DIR    put PDFs in DIR, mirroring the folder layout
-                          (default: next to each notebook)
+                          (default: PDF/ in the project directory;
+                          '-o .' inside the project puts them next to each notebook)
 
 ${B}Cleaning${N}  (${SCRIPT} clean)
   Lists what runs left behind, then asks before removing it:
-  run records in .nbrerun/ (logs, backups, failed copies), half-written
+  run records in .nb2cleanpdf/ (logs, backups, failed copies), half-written
   notebook temp files, and — from runs that were hard-killed — orphaned temp
   dirs and orphaned helper/browser processes. A run in progress is never touched.
   Uses the macOS 'trash' command when available, so records can be restored.
@@ -114,7 +120,7 @@ EOF
 
 # ---------- argument parsing -------------------------------------------------
 typeset -a INCLUDES EXCLUDES
-VENV_OPT=.venv TIMEOUT=-1 ENGINE=auto PDF_DIR= BROWSER_OPT=${NBRERUN_BROWSER:-} PDF_TIMEOUT=300
+VENV_OPT=.venv VENV_SET=0 PROJECT_OPT= TIMEOUT=-1 ENGINE=auto PDF_DIR= BROWSER_OPT=${NB2CLEANPDF_BROWSER:-} PDF_TIMEOUT=300
 MODE=run KEEP_RUNS=0 KEEP_SET=0 CLEAN_PDFS=0
 ASSUME_YES=0 INSTALL_DEPS=0 DRY_RUN=0 ALLOW_ERRORS=0 DO_EXEC=1 DO_PDF=1 DO_BACKUP=1 DO_SYNC=0
 
@@ -131,8 +137,8 @@ while (( $# )); do
     --timeout=*)      TIMEOUT=${1#*=}; shift ;;
     -o|--output-dir)  need_arg "$@"; PDF_DIR=$2; shift 2 ;;
     --output-dir=*)   PDF_DIR=${1#*=}; shift ;;
-    --venv)           need_arg "$@"; VENV_OPT=$2; shift 2 ;;
-    --venv=*)         VENV_OPT=${1#*=}; shift ;;
+    --venv)           need_arg "$@"; VENV_OPT=$2; VENV_SET=1; shift 2 ;;
+    --venv=*)         VENV_OPT=${1#*=}; VENV_SET=1; shift ;;
     --engine)         need_arg "$@"; ENGINE=$2; shift 2 ;;
     --engine=*)       ENGINE=${1#*=}; shift ;;
     --browser)        need_arg "$@"; BROWSER_OPT=$2; shift 2 ;;
@@ -151,7 +157,10 @@ while (( $# )); do
     clean)            [[ $MODE == run ]] || die "'clean' given twice"; MODE=clean; shift ;;
     --)               shift; (( $# )) && die "unexpected argument '$1'"; break ;;
     -*)               die "unknown option '$1' (see $SCRIPT -h)" ;;
-    *)                die "unexpected argument '$1' — did the shell expand an unquoted pattern? Quote it: -i '*.ipynb'" ;;
+    *)
+      if [[ -d $1 && -z $PROJECT_OPT ]]; then PROJECT_OPT=$1; shift; continue; fi
+      [[ -d $1 ]] && die "only one project directory can be given ('$PROJECT_OPT', '$1')"
+      die "unexpected argument '$1' — not a directory. Did the shell expand an unquoted pattern? Quote it: -i '*.ipynb'" ;;
   esac
 done
 
@@ -164,7 +173,19 @@ fi
   die "--engine must be auto, chrome, chrome-cli, webpdf or latex (got '$ENGINE')"
 (( DO_EXEC || DO_PDF )) || die "--no-exec together with --no-pdf leaves nothing to do"
 (( DO_EXEC )) || DO_BACKUP=0
-if [[ -n $PDF_DIR ]]; then PDF_DIR=${PDF_DIR:a}; fi
+
+# Paths given on the command line are relative to where you are; everything
+# else (.venv, notebooks, PDF/, .nb2cleanpdf/) is relative to the project dir.
+START_DIR=$PWD
+[[ -n $PDF_DIR ]] && PDF_DIR=${PDF_DIR:a}
+[[ -n $BROWSER_OPT ]] && BROWSER_OPT=${BROWSER_OPT:a}
+(( VENV_SET )) && VENV_OPT=${VENV_OPT:a}
+if [[ -n $PROJECT_OPT ]]; then
+  cd -- $PROJECT_OPT || die "cannot enter project directory '$PROJECT_OPT'"
+fi
+[[ -z $PDF_DIR ]] && PDF_DIR=$PWD/PDF
+# commands shown for manual installation must also work from where you are
+CD_PFX=; [[ $PWD != $START_DIR ]] && CD_PFX="cd ${(q)PWD} && "
 
 # ---------- shared helpers: notebook discovery + filters ----------------------
 VENV=${VENV_OPT:a}
@@ -205,11 +226,11 @@ filter_notebooks() {    # ALL -> NBS
   done
 }
 
-# ---------- `nbrerun clean`: check for and remove leftovers --------------------
+# ---------- `nb2cleanpdf clean`: check for and remove leftovers --------------------
 # What a run can leave behind, and how each is recognised:
-#   run records    .nbrerun/<timestamp>/ (logs, backups, failed copies)
-#   temp files     .<name>.ipynb.nbrerun-tmp next to a notebook (hard kill mid-write)
-#   temp dirs      $TMPDIR/nbrerun.<pid>.XXXXXX whose <pid> is no longer running
+#   run records    .nb2cleanpdf/<timestamp>/ (logs, backups, failed copies)
+#   temp files     .<name>.ipynb.nb2cleanpdf-tmp next to a notebook (hard kill mid-write)
+#   temp dirs      $TMPDIR/nb2cleanpdf.<pid>.XXXXXX whose <pid> is no longer running
 #   processes      exec helper / headless browser whose command line points into
 #                  such a dead temp dir (hard-killed run). Kernels need no handling:
 #                  ipykernel exits by itself once its parent process is gone.
@@ -234,8 +255,8 @@ run_clean() {
   local -a orph_pids=() orph_cmds=() pdfs=()
 
   # temp dirs: live ones tell us a run is in progress right now
-  for d in $tmp_root/nbrerun.<->.*(N/); do
-    owner=${${d:t}#nbrerun.}; owner=${owner%%.*}
+  for d in $tmp_root/nb2cleanpdf.<->.*(N/); do
+    owner=${${d:t}#nb2cleanpdf.}; owner=${owner%%.*}
     if pid_alive $owner; then live_owners+=$owner; else stale_tmp+=$d; fi
   done
 
@@ -243,7 +264,7 @@ run_clean() {
   for line in ${(f)"$(command ps -U $UID -o pid= -o command= 2>/dev/null)"}; do
     line=${line##[[:space:]]#}
     pid=${line%%[[:space:]]*}; cmd=${line#*[[:space:]]}
-    [[ $cmd =~ 'nbrerun\.([0-9]+)\.[A-Za-z0-9]{6}' ]] || continue
+    [[ $cmd =~ 'nb2cleanpdf\.([0-9]+)\.[A-Za-z0-9]{6}' ]] || continue
     owner=$match[1]
     (( pid == $$ )) && continue
     pid_alive $owner && continue
@@ -254,12 +275,12 @@ run_clean() {
   if (( ! $#live_owners )); then
     tmp_files=( ${(0)"$(command find . -mindepth 1 \( -type d \( -name '.?*' -o -name node_modules \
         -o -name __pycache__ -o -name site-packages \) -prune \) \
-        -o \( -type f -name '.*.ipynb.nbrerun-tmp' -print0 \) 2>/dev/null)"} )
+        -o \( -type f -name '.*.ipynb.nb2cleanpdf-tmp' -print0 \) 2>/dev/null)"} )
     tmp_files=( ${tmp_files#./} )
   fi
 
   # run records, newest first; keep the newest $KEEP_RUNS and any still running
-  runs=( .nbrerun/<->-<->(N/On) )
+  runs=( .nb2cleanpdf/<->-<->(N/On) )
   for d in $runs; do
     if [[ -f $d/.pid ]] && pid_alive "$(<$d/.pid)"; then live_runs+=$d
     elif (( $#keep_runs < KEEP_RUNS )); then keep_runs+=$d
@@ -270,20 +291,20 @@ run_clean() {
   if (( CLEAN_PDFS )); then
     discover; filter_notebooks
     for f in $NBS; do
-      if [[ -n $PDF_DIR ]]; then d=$PDF_DIR/${f:r}.pdf; else d=$PWD/${f:r}.pdf; fi
+      d=$PDF_DIR/${f:r}.pdf
       [[ -f $d ]] && pdfs+=$d
     done
   fi
 
   # ---- report ----
-  print -r -- "${C}::${N} ${B}nbrerun clean${N} — $PWD"
-  (( $#live_owners )) && warn "an nbrerun run is in progress (pid ${(j:, :)live_owners}); its files are left alone"
+  print -r -- "${C}::${N} ${B}nb2cleanpdf clean${N} — $PWD"
+  (( $#live_owners )) && warn "an nb2cleanpdf run is in progress (pid ${(j:, :)live_owners}); its files are left alone"
   local total=$(( $#del_runs + $#tmp_files + $#stale_tmp + $#orph_pids + $#pdfs ))
   local n_backups=0
 
   if (( $#runs )); then
     size_kb $del_runs; local del_kb=$REPLY
-    print -r -- "  ${B}Run records${N}  .nbrerun/  ${D}$#runs run(s); removing $#del_runs ($(human_kb $del_kb)), keeping $(( $#keep_runs + $#live_runs ))${N}"
+    print -r -- "  ${B}Run records${N}  .nb2cleanpdf/  ${D}$#runs run(s); removing $#del_runs ($(human_kb $del_kb)), keeping $(( $#keep_runs + $#live_runs ))${N}"
     local shown=0
     for d in $runs; do
       local -a b=( $d/backup/**/*.ipynb(N.) ) fl=( $d/failed/*.ipynb(N.) )
@@ -368,7 +389,10 @@ run_clean() {
       (( fails++ ))
     fi
   fi
-  [[ -d .nbrerun ]] && rmdir .nbrerun 2>/dev/null   # only if now empty
+  [[ -d .nb2cleanpdf ]] && rmdir .nb2cleanpdf 2>/dev/null   # only if now empty
+  # folders of the PDF dir that are now empty (never the project dir itself)
+  (( $#pdfs )) && [[ $PDF_DIR != $PWD && -d $PDF_DIR ]] && \
+    command find $PDF_DIR -depth -type d -empty -delete 2>/dev/null
   (( fails )) && die "some items could not be removed (see messages above)"
   print -r -- "${G}${B}Clean.${N}"
 }
@@ -414,9 +438,10 @@ VENV_REL=${VENV#$PWD/}
 if [[ -f pyproject.toml ]]; then
   UV_ADD="uv add --dev"
   [[ $VENV != $PWD/.venv ]] && UV_ADD="UV_PROJECT_ENVIRONMENT=${(q)VENV_REL} $UV_ADD"
+  UV_ADD="$CD_PFX$UV_ADD"
   UV_ADD_NOTE="adds it to the dev dependency group in pyproject.toml / uv.lock"
 else
-  UV_ADD="uv pip install --python ${(q)VENV_REL}"
+  UV_ADD="${CD_PFX}uv pip install --python ${(q)VENV_REL}"
   UV_ADD_NOTE=
 fi
 
@@ -523,18 +548,18 @@ check_deps() {   # $1 = sync | all
   if (( DO_PDF )) && [[ $ENGINE == (chrome|chrome-cli) ]]; then
     find_browser || add_dep "Google Chrome" 1 $has_brew "brew install --cask google-chrome" \
         "browser used to print PDFs (or pass --browser PATH)" "$brew_note"
-    (( pw )) || add_dep playwright 1 $uv_auto "$PW_RUN python -c 'import playwright'" \
+    (( pw )) || add_dep playwright 1 $uv_auto "$CD_PFX$PW_RUN python -c 'import playwright'" \
         "drives the browser to print PDFs" \
         "~300 MB in uv's cache (shared, outside your venv); pyproject.toml / uv.lock are not changed"
   elif (( DO_PDF )) && [[ $ENGINE == webpdf ]]; then
     if ! py_has playwright; then
       add_dep "nbconvert[webpdf]" 1 $uv_auto "$UV_ADD 'nbconvert[webpdf]'" \
           "playwright, for HTML→PDF rendering" "$UV_ADD_NOTE"
-      add_dep chromium 1 $uv_auto "${(q)VENV_REL}/bin/python -m playwright install chromium" \
+      add_dep chromium 1 $uv_auto "$CD_PFX${(q)VENV_REL}/bin/python -m playwright install chromium" \
           "headless browser that prints the PDF" \
           "shared by all projects in ~/Library/Caches/ms-playwright${no_chrome_note:+; $no_chrome_note}"
     elif ! chromium_ok; then
-      add_dep chromium 1 1 "${(q)VENV_REL}/bin/python -m playwright install chromium" \
+      add_dep chromium 1 1 "$CD_PFX${(q)VENV_REL}/bin/python -m playwright install chromium" \
           "headless browser that prints the PDF" \
           "shared by all projects in ~/Library/Caches/ms-playwright${no_chrome_note:+; $no_chrome_note}"
     fi
@@ -657,6 +682,7 @@ fi
 discover
 (( $#ALL )) || die "no .ipynb files found under $PWD (hidden dirs, .venv and node_modules are skipped)"
 filter_notebooks
+[[ $PWD != $START_DIR ]] && info "project: ${B}$PWD${N}"
 info "found ${B}$#ALL${N} notebook(s); ${B}$#NBS${N} after filters"
 (( $#NBS )) || die "no notebooks left after --include/--exclude filters"
 
@@ -666,8 +692,8 @@ if (( DRY_RUN )); then
 fi
 
 # ---------- temp workspace (kernelspec, helpers) -------------------------------
-# pid in the name lets `nbrerun clean` tell live runs from orphaned ones
-TMP=$(mktemp -d "${${TMPDIR:-/tmp}%/}/nbrerun.$$.XXXXXX") || die "mktemp failed"
+# pid in the name lets `nb2cleanpdf clean` tell live runs from orphaned ones
+TMP=$(mktemp -d "${${TMPDIR:-/tmp}%/}/nb2cleanpdf.$$.XXXXXX") || die "mktemp failed"
 INTERRUPTED=0
 trap 'INTERRUPTED=1' INT
 trap 'rm -rf -- "$TMP"; [[ -n ${RUN_DIR:-} ]] && rm -f -- "$RUN_DIR/.pid"' EXIT
@@ -789,12 +815,12 @@ fi
 if (( DO_EXEC )); then
   # A throw-away kernelspec that points at the venv's interpreter, isolated from
   # any user/system kernelspecs that might shadow "python3".
-  KERNEL_NAME="nbrerun-$$"
+  KERNEL_NAME="nb2cleanpdf-$$"
   mkdir -p $TMP/jupyter/kernels/$KERNEL_NAME
   "$PY" - $TMP/jupyter/kernels/$KERNEL_NAME/kernel.json "$PY" <<'PYEOF' || die "could not write kernelspec"
 import json, sys
 json.dump({"argv": [sys.argv[2], "-m", "ipykernel_launcher", "-f", "{connection_file}"],
-           "display_name": "nbrerun (uv venv)", "language": "python",
+           "display_name": "nb2cleanpdf (uv venv)", "language": "python",
            "metadata": {"debugger": False}}, open(sys.argv[1], "w"))
 PYEOF
   export JUPYTER_PATH="$TMP/jupyter${JUPYTER_PATH:+:$JUPYTER_PATH}"
@@ -885,7 +911,7 @@ else: nb.metadata.pop("kernelspec", None)
 
 if rc == 0:
     d, name = os.path.split(os.path.abspath(src))
-    tmp = os.path.join(d, f".{name}.nbrerun-tmp")
+    tmp = os.path.join(d, f".{name}.nb2cleanpdf-tmp")
     try:
         nbformat.write(nb, tmp)
         shutil.copymode(src, tmp)
@@ -950,9 +976,9 @@ if (( ! ASSUME_YES )); then
 fi
 
 # ---------- 6. run ------------------------------------------------------------
-RUN_DIR=$PWD/.nbrerun/$(strftime %Y%m%d-%H%M%S $EPOCHSECONDS)
+RUN_DIR=$PWD/.nb2cleanpdf/$(strftime %Y%m%d-%H%M%S $EPOCHSECONDS)
 mkdir -p $RUN_DIR/logs || die "cannot create $RUN_DIR"
-print -r -- $$ >$RUN_DIR/.pid          # marks the run as live for `nbrerun clean`
+print -r -- $$ >$RUN_DIR/.pid          # marks the run as live for `nb2cleanpdf clean`
 typeset -A EXEC_ST PDF_ST LOGS
 typeset -a DONE=()
 
@@ -960,7 +986,7 @@ elapsed() { printf '%.1fs' $(( EPOCHREALTIME - $1 )) }
 
 export_pdf() {   # $1 notebook, $2 log, $3 index -> writes PDF, returns status
   local nb=$1 log=$2 out=$TMP/pdf/$3 dest
-  if [[ -n $PDF_DIR ]]; then dest=$PDF_DIR/${nb:r}.pdf; else dest=$PWD/${nb:r}.pdf; fi
+  dest=$PDF_DIR/${nb:r}.pdf
   mkdir -p $out
   local -a args=( --output-dir $out --output out )
   case $ENGINE in
@@ -1076,11 +1102,12 @@ for nb in "${DONE[@]}"; do
 done
 (( INTERRUPTED )) && print -r -- "  ${Y}interrupted — $(( total - $#DONE )) notebook(s) not processed${N}"
 print
+(( DO_PDF )) && print -r -- "  PDFs:     ${PDF_DIR#$PWD/}/"
 print -r -- "  logs:     ${RUN_DIR#$PWD/}/logs/"
 (( DO_BACKUP )) && print -r -- "  backups:  ${RUN_DIR#$PWD/}/backup/   (originals before re-run)"
 [[ -d $RUN_DIR/failed ]] && print -r -- "  failed:   ${RUN_DIR#$PWD/}/failed/   (partially executed copies)"
-[[ -f .gitignore ]] && ! command grep -qx '\.nbrerun/\?' .gitignore && \
-  print -r -- "  ${D}tip: add '.nbrerun/' to .gitignore${N}"
+[[ -f .gitignore ]] && ! command grep -qx '\.nb2cleanpdf/\?' .gitignore && \
+  print -r -- "  ${D}tip: add '.nb2cleanpdf/' to .gitignore${N}"
 
 if (( INTERRUPTED )); then exit 130; fi
 if (( n_fail )); then print -r -- "${R}${B}$n_fail notebook(s) had errors.${N}"; exit 1; fi

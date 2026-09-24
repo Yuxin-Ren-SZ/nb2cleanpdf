@@ -1,4 +1,4 @@
-# nbrerun — requirements and design decisions
+# nb2cleanpdf — requirements and design decisions
 
 ## Requirements (from the user)
 
@@ -12,6 +12,10 @@
    it (`y` installs, `n` exits; the manual commands stay visible). Propose tools that help.
 8. Don't download a browser per project — reuse the installed Chrome.
 9. A `clean` command that checks for leftovers, then removes them.
+10. PDFs go to `PDF/` in the project by default (`-o DIR` to change); the project can be
+    given as an argument, and the script works from wherever it is installed.
+
+Name: `nb2cleanpdf` (was `nbrerun`) — the goal is a clean PDF of each notebook.
 
 Target: macOS, Ghostty, zsh 5.9, Homebrew, uv. Notebooks are research notebooks with plots,
 formulas and relative paths.
@@ -37,7 +41,7 @@ formulas and relative paths.
 - Execution uses **nbclient directly** (`exec.py`), not `nbconvert --execute`: clears outputs,
   `execution_count` and `metadata.execution`; `record_timing=False`; fresh kernel per notebook;
   cwd = notebook directory.
-- Throw-away kernelspec `nbrerun-$$` in `$TMP/jupyter/kernels/` (prepended to `JUPYTER_PATH`)
+- Throw-away kernelspec `nb2cleanpdf-$$` in `$TMP/jupyter/kernels/` (prepended to `JUPYTER_PATH`)
   so a user-level `python3` kernelspec can't shadow the venv interpreter. The notebook's
   original kernelspec metadata is restored before saving.
 - Kernel env: `VIRTUAL_ENV` + `PATH` point at the venv (`!pip`, `subprocess` resolve to it);
@@ -47,12 +51,26 @@ formulas and relative paths.
 
 ## Safety of user files
 
-- The original is only replaced after a fully successful run: write `.<name>.nbrerun-tmp`,
+- The original is only replaced after a fully successful run: write `.<name>.nb2cleanpdf-tmp`,
   `copymode`, `os.replace` (atomic).
 - On failure/timeout/Ctrl-C the original is untouched; a partial copy goes to
-  `.nbrerun/<ts>/failed/NNN_<slug>.ipynb`.
-- Backups on by default: `.nbrerun/<ts>/backup/<relpath>` (old outputs may be irreplaceable).
+  `.nb2cleanpdf/<ts>/failed/NNN_<slug>.ipynb`.
+- Backups on by default: `.nb2cleanpdf/<ts>/backup/<relpath>` (old outputs may be irreplaceable).
 - `exec.py` return codes: 0 ok, 1 cell error, 2 other, 3 skipped, 4 timeout, 5 dead kernel.
+
+## Project directory and paths
+
+- `nb2cleanpdf [DIR]` / `nb2cleanpdf clean [DIR]`: a positional argument that is an existing
+  directory is the project; anything else still gets the "quote your pattern" error.
+- Paths in options (`-o`, `--venv`, `--browser`) are resolved against the invocation dir *before*
+  the script `cd`s into the project; everything else (`.venv`, notebooks, `PDF/`,
+  `.nb2cleanpdf/`) is relative to the project.
+- Dependency install commands for the venv get a `cd <project> && ` prefix when the project is
+  not the current dir, so the printed command works when pasted — and is still exactly what runs.
+- Default output dir is `<project>/PDF` (mirrors the folder layout; pruned from discovery).
+  `-o .` inside the project restores "next to each notebook". `clean --pdfs` removes PDF
+  folders that end up empty (never the project dir itself).
+- Nothing depends on where the script file lives (`$0` is only used for the program name).
 
 ## Discovery and patterns
 
@@ -112,9 +130,9 @@ formulas and relative paths.
 
 ## Run bookkeeping
 
-- `$TMP = $TMPDIR/nbrerun.<pid>.XXXXXX` (pid lets `clean` tell live from orphaned runs). The EXIT
+- `$TMP = $TMPDIR/nb2cleanpdf.<pid>.XXXXXX` (pid lets `clean` tell live from orphaned runs). The EXIT
   trap removes `$TMP` and `$RUN_DIR/.pid`.
-- `.nbrerun/<YYYYmmdd-HHMMSS>/`: `logs/`, `backup/`, `failed/`, `.pid` (marks a live run).
+- `.nb2cleanpdf/<YYYYmmdd-HHMMSS>/`: `logs/`, `backup/`, `failed/`, `.pid` (marks a live run).
 - Ctrl-C: `trap 'INTERRUPTED=1' INT`; the foreground helper gets SIGINT, the notebook stays
   untouched, the summary is printed, exit 130.
 - No spinners/background jobs (a non-interactive shell's background jobs ignore SIGINT).
@@ -125,13 +143,13 @@ formulas and relative paths.
   Tracebacks from IPython carry their own ANSI codes: the on-screen error summary keeps them on a
   terminal and strips them otherwise; logs are always written as plain text.
 
-## `nbrerun clean`
+## `nb2cleanpdf clean`
 
 | Leftover | Rule |
 |---|---|
-| run records `.nbrerun/<ts>/` | newest first, `--keep N`; live runs never touched |
-| `.*.ipynb.nbrerun-tmp` | skipped while any run is live |
-| temp dirs `$TMPDIR/nbrerun.<pid>.*` | owner pid dead |
+| run records `.nb2cleanpdf/<ts>/` | newest first, `--keep N`; live runs never touched |
+| `.*.ipynb.nb2cleanpdf-tmp` | skipped while any run is live |
+| temp dirs `$TMPDIR/nb2cleanpdf.<pid>.*` | owner pid dead |
 | processes | command line contains a dead run's temp-dir name; TERM, ~3 s, KILL |
 | PDFs | only with `--pdfs`; `<stem>.pdf`, honouring `-o/-i/-e` |
 
