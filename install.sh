@@ -44,7 +44,7 @@ while [ $# -gt 0 ]; do
     --bin-dir=*) BIN_DIR=${1#*=}; shift ;;
     --prefix)    [ $# -ge 2 ] || die "--prefix needs a directory"; BIN_DIR=$2/bin; shift 2 ;;
     --prefix=*)  BIN_DIR=${1#*=}/bin; shift ;;
-    --version)   [ $# -ge 2 ] && [ -n "$2" ] || die "--version needs a version, e.g. 0.2.0"; VERSION=$2; shift 2 ;;
+    --version)   { [ $# -ge 2 ] && [ -n "$2" ]; } || die "--version needs a version, e.g. 0.2.0"; VERSION=$2; shift 2 ;;
     --version=*) VERSION=${1#*=}; shift ;;
     --link)      LINK=1; shift ;;
     --force)     FORCE=1; shift ;;
