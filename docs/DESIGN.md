@@ -92,6 +92,18 @@ formulas and relative paths.
   follows (Enter with nothing selected returns the focused line in `--multi` mode).
 - Without fzf: numbered list, type numbers/ranges to exclude. Skipped with `-y` or no TTY.
 
+## Versions and releases
+
+- `VERSION=x.y.z` near the top of the script; `-V/--version` prints `nb2cleanpdf x.y.z`.
+  Release = bump `VERSION` in a commit, merge, tag `vx.y.z` on it, GitHub release with
+  `nb2cleanpdf` + `install.sh` attached. Tag and `VERSION` must match. Between releases
+  `main` reports the last (or upcoming) release number — there is no `-dev` suffix.
+- `install.sh` installs `main` by default (the one-liner always gets the latest);
+  `--version X` (or `NB2CLEANPDF_VERSION`) downloads `raw…/vX/nb2cleanpdf` instead, even from a
+  clone, and is rejected with `--link` or `NB2CLEANPDF_URL`. The installer reports the
+  version it read from the script's `VERSION=` line.
+- v0.1.0 predates `VERSION`/`--version`: it installs fine but can't report its version.
+
 ## Dependencies
 
 - Registry `add_dep name required auto cmd why note`; `ensure_deps` loops up to 3 rounds.

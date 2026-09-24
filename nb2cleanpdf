@@ -22,6 +22,7 @@ zmodload zsh/datetime || { print -u2 "zsh/datetime module unavailable"; exit 1 }
 autoload -Uz is-at-least
 
 SCRIPT=${0:t}
+VERSION=0.2.0            # bumped in the release commit; the tag is v$VERSION
 
 # ---------- colours / messages ---------------------------------------------
 if [[ -t 1 ]]; then
@@ -51,6 +52,7 @@ export each one to PDF.
 
 ${B}Usage:${N} ${SCRIPT} [options] [DIR]
        ${SCRIPT} clean [-n] [-y] [--keep N] [--pdfs [-o DIR] [-i/-e PATTERN]] [DIR]
+       ${SCRIPT} -h | -V        help / version
 
   DIR is the project directory (default: the current directory). Paths given
   in options (-o, --venv, --browser) are relative to where you run the command.
@@ -129,6 +131,7 @@ need_arg() { [[ $# -ge 2 && -n $2 ]] || die "option '$1' needs an argument" }
 while (( $# )); do
   case $1 in
     -h|--help)        usage; exit 0 ;;
+    -V|--version)     print -r -- "$SCRIPT $VERSION"; exit 0 ;;
     -i|--include)     need_arg "$@"; INCLUDES+=("$2"); shift 2 ;;
     --include=*)      INCLUDES+=("${1#*=}"); shift ;;
     -e|--exclude)     need_arg "$@"; EXCLUDES+=("$2"); shift 2 ;;

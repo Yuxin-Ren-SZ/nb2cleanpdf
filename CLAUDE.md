@@ -7,6 +7,8 @@
   3rd line starting with `# nb2cleanpdf — ` — keep that header line.
 - `README.md` (English) and `README.zh-CN.md` (简体中文) must stay in sync: any change to one —
   content, options, examples, badges — goes into the other in the same commit.
+- Releasing: bump `VERSION=` in `nb2cleanpdf`, merge, then tag `v<VERSION>` on that commit and
+  create the GitHub release with `nb2cleanpdf` and `install.sh` attached (see `docs/DESIGN.md`).
 - Read `docs/DESIGN.md` before changing behaviour — most "obvious improvements" collide with a recorded decision.
 
 ## Invariants

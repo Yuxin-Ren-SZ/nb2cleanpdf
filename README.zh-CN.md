@@ -30,6 +30,13 @@ notebook 从头重新运行一遍，然后导出为 PDF（放在 `PDF/` 目录�
 curl -fsSL https://raw.githubusercontent.com/Yuxin-Ren-SZ/nb2cleanpdf/main/install.sh | sh
 ```
 
+这会安装 `main` 分支上的最新代码。要固定某个
+[发布版本](https://github.com/Yuxin-Ren-SZ/nb2cleanpdf/releases)，加上 `--version`：
+
+```zsh
+curl -fsSL https://raw.githubusercontent.com/Yuxin-Ren-SZ/nb2cleanpdf/main/install.sh | sh -s -- --version 0.2.0
+```
+
 或者从克隆的仓库安装：
 
 ```zsh
@@ -57,6 +64,7 @@ nb2cleanpdf -i 'analysis/*' -e '(#i)*draft*' -o ~/Desktop/pdfs -t 900
 nb2cleanpdf -o .                     # PDF 放在每个 notebook 旁边，而不是 PDF/
 nb2cleanpdf clean -n                 # 查看残余文件；`nb2cleanpdf clean` 进行清理
 nb2cleanpdf -h                       # 全部选项
+nb2cleanpdf -V                       # 查看已安装的版本
 ```
 
 项目目录（默认为当前目录）包含 `.venv`、notebook、`PDF/`，以及 `.nb2cleanpdf/` 中的运行记录。
