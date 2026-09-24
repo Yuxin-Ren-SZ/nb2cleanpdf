@@ -67,6 +67,10 @@ and the run records in `.nb2cleanpdf/`. Paths given in options (`-o`, `--venv`,
 Always quote patterns. A plain word matches anywhere in the path; a glob with `/`
 matches the whole relative path; a glob without `/` matches the file name.
 
+**Only run notebooks you trust.** Every code cell is executed with your user's permissions,
+exactly like *Run All* in Jupyter — there is no sandbox. Look through notebooks from
+unknown sources before processing them.
+
 ## PDF engines
 
 | `--engine` | how | needs |
