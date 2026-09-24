@@ -44,7 +44,7 @@ nbr_tty() {
   if [[ $OSTYPE == darwin* ]]; then
     OUT=$(script -q /dev/null "$NBRERUN" "$@" </dev/null 2>&1)
   else
-    OUT=$(script -qec "${(j: :)${(q)@}}" /dev/null </dev/null 2>&1)
+    OUT=$(script -qec "${(q)NBRERUN} ${(j: :)${(q)@}}" /dev/null </dev/null 2>&1)
   fi
   RC=$?
 }

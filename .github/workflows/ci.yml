@@ -51,6 +51,11 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update -q && sudo apt-get install -y -q zsh
 
+      # the runner image has no CJK fonts; without them 中文 renders as boxes
+      - name: install CJK fonts
+        if: runner.os == 'Linux' && matrix.engine != 'none' && matrix.engine != 'latex'
+        run: sudo apt-get install -y -q fonts-noto-cjk
+
       - name: install LaTeX + pandoc
         if: matrix.engine == 'latex'
         run: >
