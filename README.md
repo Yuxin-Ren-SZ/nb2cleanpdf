@@ -1,5 +1,7 @@
 # nb2cleanpdf
 
+**English** | [简体中文](README.zh-CN.md)
+
 Export **clean PDFs** of Jupyter notebooks: every notebook in a project is re-run
 from scratch with the project's **uv** virtualenv, then exported to PDF (into `PDF/`).
 
@@ -71,7 +73,7 @@ Formulas are rendered with MathJax from a CDN, so PDF export needs network acces
 ## Development
 
 ```zsh
-tests/run-tests.zsh --engine auto    # builds a scratch project in tests/.work/ and runs ~50 checks
+tests/run-tests.zsh --engine auto    # builds a scratch project in tests/.work/ and runs ~80 checks
 tests/run-tests.zsh --engine none    # skip PDF export (fast)
 ```
 
