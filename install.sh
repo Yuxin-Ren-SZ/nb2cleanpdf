@@ -24,7 +24,7 @@ URL=${NB2CLEANPDF_URL:-https://raw.githubusercontent.com/Yuxin-Ren-SZ/nb2cleanpd
 MARKER="# $NAME — "          # first comment line of the real script identifies it
 
 if [ -t 1 ]; then R=$(printf '\033[31m') G=$(printf '\033[32m') Y=$(printf '\033[33m') D=$(printf '\033[2m') N=$(printf '\033[0m')
-else R= G= Y= D= N=; fi
+else R='' G='' Y='' D='' N=''; fi
 info() { printf '%s\n' "$*"; }
 warn() { printf '%swarning:%s %s\n' "$Y" "$N" "$*" >&2; }
 die()  { printf '%serror:%s %s\n' "$R" "$N" "$*" >&2; exit 1; }
@@ -65,7 +65,7 @@ if [ $UNINSTALL -eq 1 ]; then
 fi
 
 # ---------- find the script: the clone next to install.sh, or download it ----------
-SRC= TMPF=
+SRC='' TMPF=''
 case $0 in
   */install.sh|install.sh) HERE=$(cd "$(dirname "$0")" && pwd -P); [ -f "$HERE/$NAME" ] && SRC=$HERE/$NAME ;;
 esac
@@ -90,8 +90,9 @@ if [ $LINK -eq 1 ]; then
   how="symlink → $SRC"
 else
   # copy to a temp name first, then rename: a running nb2cleanpdf keeps its old file
-  cp "$SRC" "$TARGET.tmp.$$" && chmod 755 "$TARGET.tmp.$$" && mv -f "$TARGET.tmp.$$" "$TARGET" ||
-    { rm -f "$TARGET.tmp.$$"; die "cannot write $TARGET"; }
+  if ! { cp "$SRC" "$TARGET.tmp.$$" && chmod 755 "$TARGET.tmp.$$" && mv -f "$TARGET.tmp.$$" "$TARGET"; }; then
+    rm -f "$TARGET.tmp.$$"; die "cannot write $TARGET"
+  fi
   how="copy"
 fi
 info "${G}✓${N} installed $TARGET ${D}($how)${N}"
@@ -104,7 +105,8 @@ case ":$PATH:" in
 esac
 command -v zsh >/dev/null 2>&1 || warn "zsh not found — $NAME is a zsh script (macOS ships it; on Linux: apt install zsh)"
 command -v uv  >/dev/null 2>&1 || warn "uv not found — install it: brew install uv   (or see https://docs.astral.sh/uv/)"
-for old in "$BIN_DIR/nbrerun"; do
-  [ -e "$old" ] && warn "an old version is still installed as $old (the previous name) — remove it with: rm '$old'"
-done
+old=$BIN_DIR/nbrerun          # the previous name of the tool
+if [ -e "$old" ]; then
+  warn "an old version is still installed as $old (the previous name) — remove it with: rm '$old'"
+fi
 info "run '${NAME} -h' for usage"
