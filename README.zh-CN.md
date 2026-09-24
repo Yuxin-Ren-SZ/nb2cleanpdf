@@ -1,5 +1,12 @@
 # nb2cleanpdf
 
+[![CI](https://github.com/Yuxin-Ren-SZ/nb2cleanpdf/actions/workflows/ci.yml/badge.svg)](https://github.com/Yuxin-Ren-SZ/nb2cleanpdf/actions/workflows/ci.yml)
+![platform: macOS | Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-blue)
+![shell: zsh](https://img.shields.io/badge/shell-zsh-4EAA25)
+[![venv: uv](https://img.shields.io/badge/venv-uv-DE5FE9?logo=uv&logoColor=white)](https://docs.astral.sh/uv/)
+![Jupyter notebooks](https://img.shields.io/badge/Jupyter-notebooks-F37626?logo=jupyter&logoColor=white)
+[![last commit](https://img.shields.io/github/last-commit/Yuxin-Ren-SZ/nb2cleanpdf)](https://github.com/Yuxin-Ren-SZ/nb2cleanpdf/commits/main)
+
 [English](README.md) | **简体中文**
 
 把 Jupyter notebook 导出成**干净的 PDF**：用项目自己的 **uv** 虚拟环境把项目里的每个
@@ -13,7 +20,8 @@ notebook 从头重新运行一遍，然后导出为 PDF（放在 `PDF/` 目录�
 - 启动时检查所有依赖，缺什么会给出安装命令，并询问是否帮你安装
 - `nb2cleanpdf clean` 清理运行记录，以及被强行中断的运行留下的残余
 
-这是一个独立的单文件 zsh 脚本，面向 macOS（Linux 也能用）。
+这是一个独立的单文件 zsh 脚本，面向 macOS（Linux 也能用；两者都在 CI 中测试）。
+不支持原生 Windows——WSL 可能可用，但未经测试。
 
 ## 安装
 

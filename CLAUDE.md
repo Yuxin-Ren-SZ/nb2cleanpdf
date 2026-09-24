@@ -5,6 +5,8 @@
   and written to `$TMP` at runtime). Don't split it without asking.
 - `install.sh` is POSIX sh (runs via `curl | sh`, dash on Linux). It recognises the script by its
   3rd line starting with `# nb2cleanpdf — ` — keep that header line.
+- `README.md` (English) and `README.zh-CN.md` (简体中文) must stay in sync: any change to one —
+  content, options, examples, badges — goes into the other in the same commit.
 - Read `docs/DESIGN.md` before changing behaviour — most "obvious improvements" collide with a recorded decision.
 
 ## Invariants
