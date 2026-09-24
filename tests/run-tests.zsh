@@ -179,6 +179,122 @@ cd $V/empty; nbr -y --no-pdf
 check "missing deps listed with install command" '(( RC == 1 )) && has "uv pip install --python .venv jupyter" && has "no TTY"'
 cd $P
 
+# ---------- environments (--env) ---------------------------------------------------
+section "environments"
+E=$WORK/envs
+mkdir -p $E/proj $E/bin
+py -c 'import nbformat as n, sys
+nb = n.v4.new_notebook(); nb.cells = [n.v4.new_code_cell(sys.argv[2])]; n.write(nb, sys.argv[1])' \
+  $E/proj/env.ipynb 'import os, sys
+print("prefix=" + sys.prefix)
+for k in ("VIRTUAL_ENV", "CONDA_PREFIX", "NB2_ACT", "NB2_STATE"):
+    print(k + "=" + os.environ.get(k, "-"))'
+EXEC_PKGS=(nbclient nbformat ipykernel)
+# local: a plain `python -m venv` without pip (deps put in with uv), and one with pip
+py -m venv --without-pip $E/lv                                  || die "venv lv"
+uv pip install -q --python $E/lv/bin/python $EXEC_PKGS          || die "deps lv"
+py -m venv $E/lvpip                                             || die "venv lvpip"
+# conda without conda: a prefix with conda-meta/, an activate.d script and
+# `conda env config vars` (conda-meta/state); plus a fake manager for name lookup
+uv venv -q $E/fc && uv pip install -q --python $E/fc/bin/python $EXEC_PKGS || die "fake conda env"
+mkdir -p $E/fc/conda-meta $E/fc/etc/conda/activate.d
+print 'export NB2_ACT="activated $CONDA_PREFIX"' >$E/fc/etc/conda/activate.d/nb2.sh
+print '{"env_vars": {"NB2_STATE": "from state"}}' >$E/fc/conda-meta/state
+uv venv -q $E/fc0 && mkdir -p $E/fc0/conda-meta                 || die "fake conda env (empty)"
+print -r -- '#!/bin/sh
+[ "$1 $2 $3" = "env list --json" ] && printf "{\n  \"envs\": [\n    \"%s\",\n    \"%s\"\n  ]\n}\n" "'$E/fc'" "'$E/fc0'"' >$E/bin/micromamba
+chmod +x $E/bin/micromamba
+# a fake manager only: keep a real conda/micromamba on this machine out of it
+fake() { env -u CONDA_EXE -u MAMBA_EXE PATH=$E/bin:/usr/bin:/bin:${commands[uv]:h} "$@" }
+cd $E/proj
+
+nbr -n --env nope;               check "unknown --env kind rejected"        '(( RC == 1 )) && has "uv, local or conda"'
+nbr -n --env local;              check "--env local needs a path"           '(( RC == 1 )) && has "needs a path"'
+nbr -n --env conda -y;           check "--env conda needs a name"           '(( RC == 1 )) && has "needs a name or path"'
+nbr -n --env=local:;             check "--env=local: needs a path"          '(( RC == 1 )) && has "needs a path"'
+nbr -n --env uv --venv x;        check "--env with --venv rejected"         '(( RC == 1 )) && has "once"'
+nbr -n --sync --env local $E/lv; check "--sync only with uv"                '(( RC == 1 )) && has "only applies to a uv environment"'
+nbr -n;                          check "default uv: missing .venv hints other envs" '(( RC == 1 )) && has "--env local PATH" && has "--env conda NAME"'
+nbr -n --env=uv:$E/lv;           check "uv env not made by uv suggests local" '(( RC == 1 )) && has "--env local"'
+nbr -n --env local $E/fc;        check "local env that is conda suggests conda" '(( RC == 1 )) && has "--env conda"'
+nbr -n --env conda $E/lv;        check "conda env that is a venv suggests local" '(( RC == 1 )) && has "--env local"'
+nbr -n --env local $E/nope;      check "missing local env is an error"      '(( RC == 1 )) && has "no virtualenv found"'
+
+nbr -y --no-pdf --env local $E/lv
+check "local venv (no pip) runs"             '(( RC == 0 )) && has_line env.ipynb "prefix=$E/lv" && has_line env.ipynb "VIRTUAL_ENV=$E/lv"'
+nbr -y --no-pdf --env local $E/lvpip
+check "local venv: deps via its pip"         '(( RC == 1 )) && has "lvpip/bin/python -m pip install jupyter" && has "no TTY"'
+
+OUT=$(fake $NB2CLEANPDF -y --no-pdf --env conda fc </dev/null 2>&1); RC=$?
+check "conda env by name (manager lookup)"   '(( RC == 0 )) && has_line env.ipynb "prefix=$E/fc"'
+check "conda: activate.d scripts ran"        'has_line env.ipynb "NB2_ACT=activated $E/fc"'
+check "conda: env config vars applied"       'has_line env.ipynb "NB2_STATE=from state"'
+check "conda: CONDA_PREFIX set, no VIRTUAL_ENV" 'has_line env.ipynb "CONDA_PREFIX=$E/fc" && has_line env.ipynb "VIRTUAL_ENV=-"'
+OUT=$(fake $NB2CLEANPDF -n --env conda nope </dev/null 2>&1); RC=$?
+check "unknown conda env name is an error"   '(( RC == 1 )) && has "no conda environment named" && has "micromamba env list"'
+OUT=$(fake $NB2CLEANPDF -y --no-pdf --env conda $E/fc0 </dev/null 2>&1); RC=$?
+check "conda: deps via its manager"          '(( RC == 1 )) && has "micromamba install -y -p $E/fc0 -c conda-forge jupyter"'
+OUT=$(env -u CONDA_EXE -u MAMBA_EXE PATH=/usr/bin:/bin $NB2CLEANPDF -n --env conda fc </dev/null 2>&1); RC=$?
+check "conda name without a manager: error"  '(( RC == 1 )) && has "no conda, mamba or micromamba found"'
+
+# a real micromamba / conda, when there is one (CI installs micromamba)
+if MGR=${MAMBA_EXE:-${commands[micromamba]:-${CONDA_EXE:-${commands[conda]:-}}}}; [[ -n $MGR ]]; then
+  CPKGS=(python=3.12 $EXEC_PKGS)
+  [[ $ENGINE != none ]] && CPKGS+=(nbconvert-core)
+  $MGR create -q -y -p $E/real -c conda-forge $CPKGS >/dev/null || die "$MGR create"
+  nbr -y --env conda $E/real $PDFARGS
+  check "real conda env ($MGR:t) runs"       '(( RC == 0 )) && has_line env.ipynb "CONDA_PREFIX=$E/real"'
+  [[ $ENGINE != none ]] && check "real conda env: PDF exported" 'is_pdf $E/proj/PDF/env.pdf'
+  $MGR create -q -y -n nb2cleanpdf-test -c conda-forge $CPKGS >/dev/null || die "$MGR create -n"
+  nbr -y --no-pdf --env conda nb2cleanpdf-test
+  check "real conda env by name"             '(( RC == 0 )) && [[ $(outputs env.ipynb) == *"CONDA_PREFIX="*/nb2cleanpdf-test$'"'\\n'"'* ]]'
+  $MGR env remove -q -y -n nb2cleanpdf-test >/dev/null 2>&1
+else
+  print -r -- "  skip  real conda env (no conda / micromamba on this machine)"
+fi
+cd $P
+
+# ---------- config file (--config) ---------------------------------------------------
+section "config file"
+C=$WORK/cfg
+mkdir -p $C/sub
+print 'exclude = ["scratch"]   # comment' >$P/.nb2cleanpdf.toml
+nbr -n;                          check "config ignored without --config"    '(( RC == 0 )) && (( $(listed) == 6 ))'
+nbr -n --config;                 check "--config reads the project config"  '(( RC == 0 )) && (( $(listed) == 4 ))'
+nbr -n --config -e eda;          check "CLI list replaces the config list"  '(( RC == 0 )) && (( $(listed) == 5 ))'
+cd $C; nbr -n --config $P; cd $P; check "--config DIR: DIR is the project" '(( RC == 0 )) && (( $(listed) == 4 ))'
+rm $P/.nb2cleanpdf.toml
+nbr -n --config;                 check "--config without the file: error"   '(( RC == 1 )) && has "config file not found"'
+nbr -n --config nope.toml;       check "--config missing FILE: error"       '(( RC == 1 )) && has "not found"'
+print 'include = "eda"\ntimeout = 5\nallow_errors = false\nbackup = true' >$C/ok.toml
+nbr -n --config $C/ok.toml;      check "--config FILE (string, int, bools)" '(( RC == 0 )) && (( $(listed) == 1 ))'
+nbr -n --config=$C/ok.toml -i intro; check "--config=FILE, CLI -i wins"     '(( RC == 0 )) && (( $(listed) == 1 )) && has "intro.ipynb"'
+print 'engine = "nope"' >$C/eng.toml
+nbr -n --config $C/eng.toml;     check "bad config value names the key"     '(( RC == 1 )) && has "'"'engine'"' in"'
+nbr -n --config $C/eng.toml --engine chrome-cli --no-pdf
+check "CLI value overrides a bad config one" '(( RC == 0 ))'
+print '# x\nfoo = 1' >$C/bad1.toml;          nbr -n --config $C/bad1.toml
+check "unknown key: error with line number"  '(( RC == 1 )) && has "bad1.toml:2:" && has "unknown key"'
+print 'timeout = 1\ntimeout = 2' >$C/bad2.toml; nbr -n --config $C/bad2.toml
+check "duplicate key rejected"               '(( RC == 1 )) && has "set twice"'
+print '[tool]\nengine = "chrome"' >$C/bad3.toml; nbr -n --config $C/bad3.toml
+check "sections rejected"                    '(( RC == 1 )) && has "sections are not supported"'
+print 'engine = chrome' >$C/bad4.toml;       nbr -n --config $C/bad4.toml
+check "unquoted string rejected"             '(( RC == 1 )) && has "bad4.toml:1:"'
+print 'timeout = "5"' >$C/bad5.toml;         nbr -n --config $C/bad5.toml
+check "wrong value type rejected"            '(( RC == 1 )) && has "can'"'"'t be string"'
+print 'exclude = ["a", "b" "c"]' >$C/bad6.toml; nbr -n --config $C/bad6.toml
+check "malformed array rejected"             '(( RC == 1 )) && has "in the array"'
+print 'env = "local"' >$C/sub/noenv.toml;   nbr -n --config $C/sub/noenv.toml
+check "env without env_spec: error"          '(( RC == 1 )) && has "needs env_spec"'
+print 'env = "local"\nenv_spec = "../../envs/lv"' >$C/sub/lv.toml
+cd $E/proj
+nbr -y --no-pdf --config $C/sub/lv.toml
+check "env_spec relative to the config file" '(( RC == 0 )) && has_line $E/proj/env.ipynb "prefix=$E/lv"'
+nbr -n --config $C/sub/lv.toml --env local $E/nope
+check "CLI --env overrides config env"       '(( RC == 1 )) && has "no virtualenv found"'
+cd $P
+
 # ---------- successful run ---------------------------------------------------------
 section "clean re-run + PDF export"
 nbr -y -e scratch $NB_EXCL $PDFARGS

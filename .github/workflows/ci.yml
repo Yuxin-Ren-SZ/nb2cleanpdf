@@ -40,13 +40,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: macos-latest,  engine: chrome }
+          - { os: macos-latest,  engine: chrome, conda: true }
           - { os: ubuntu-latest, engine: chrome }
           - { os: macos-latest,  engine: chrome-cli }
           - { os: ubuntu-latest, engine: chrome-cli }
           - { os: ubuntu-latest, engine: webpdf }
           - { os: ubuntu-latest, engine: latex }
-          - { os: ubuntu-latest, engine: none }
+          - { os: ubuntu-latest, engine: none, conda: true }
     steps:
       - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v6
@@ -66,6 +66,14 @@ jobs:
           sudo apt-get install -y -q --no-install-recommends
           pandoc texlive-xetex texlive-latex-extra texlive-fonts-recommended
           texlive-plain-generic texlive-luatex lmodern
+
+      # micromamba only (no env): the suite then also tests real conda envs
+      - name: install micromamba
+        if: matrix.conda
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          init-shell: none
+          post-cleanup: none
 
       - name: browser in use
         if: startsWith(matrix.engine, 'chrome')
