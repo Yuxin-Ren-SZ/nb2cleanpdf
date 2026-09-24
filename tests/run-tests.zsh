@@ -204,8 +204,14 @@ uv venv -q $E/fc0 && mkdir -p $E/fc0/conda-meta                 || die "fake con
 print -r -- '#!/bin/sh
 [ "$1 $2 $3" = "env list --json" ] && printf "{\n  \"envs\": [\n    \"%s\",\n    \"%s\"\n  ]\n}\n" "'$E/fc'" "'$E/fc0'"' >$E/bin/micromamba
 chmod +x $E/bin/micromamba
-# a fake manager only: keep a real conda/micromamba on this machine out of it
-fake() { env -u CONDA_EXE -u MAMBA_EXE PATH=$E/bin:/usr/bin:/bin:${commands[uv]:h} "$@" }
+# a fake manager only: a PATH without any real conda / mamba / micromamba (CI
+# images ship conda in /usr/bin)
+mkdir -p $E/sys
+for f in /usr/bin/*(N) /bin/*(N); do
+  [[ ${f:t} == (conda|mamba|micromamba) || -e $E/sys/${f:t} ]] || ln -s $f $E/sys/
+done
+ln -sf ${commands[uv]} $E/bin/uv
+fake() { env -u CONDA_EXE -u MAMBA_EXE PATH=$E/bin:$E/sys "$@" }
 cd $E/proj
 
 nbr -n --env nope;               check "unknown --env kind rejected"        '(( RC == 1 )) && has "uv, local or conda"'
@@ -234,7 +240,7 @@ OUT=$(fake $NB2CLEANPDF -n --env conda nope </dev/null 2>&1); RC=$?
 check "unknown conda env name is an error"   '(( RC == 1 )) && has "no conda environment named" && has "micromamba env list"'
 OUT=$(fake $NB2CLEANPDF -y --no-pdf --env conda $E/fc0 </dev/null 2>&1); RC=$?
 check "conda: deps via its manager"          '(( RC == 1 )) && has "micromamba install -y -p $E/fc0 -c conda-forge jupyter"'
-OUT=$(env -u CONDA_EXE -u MAMBA_EXE PATH=/usr/bin:/bin $NB2CLEANPDF -n --env conda fc </dev/null 2>&1); RC=$?
+OUT=$(env -u CONDA_EXE -u MAMBA_EXE PATH=$E/sys $NB2CLEANPDF -n --env conda fc </dev/null 2>&1); RC=$?
 check "conda name without a manager: error"  '(( RC == 1 )) && has "no conda, mamba or micromamba found"'
 
 # a real micromamba / conda, when there is one (CI installs micromamba)
