@@ -110,6 +110,44 @@ nbr -n --engine nope;            check "bad --engine rejected"              '(( 
 nbr -n --keep 1;                 check "--keep outside clean rejected"      '(( RC == 1 ))'
 nbr --no-exec --no-pdf;          check "--no-exec --no-pdf rejected"        '(( RC == 1 ))'
 
+# ---------- install script -------------------------------------------------------
+section "install script"
+INST=$ROOT/install.sh
+I=$WORK/inst
+inst() { OUT=$(sh "$@" </dev/null 2>&1); RC=$? }
+inst $INST --bin-dir $I/bin
+check "installs a copy"                      '(( RC == 0 )) && [[ -f $I/bin/nb2cleanpdf && ! -L $I/bin/nb2cleanpdf && -x $I/bin/nb2cleanpdf ]] && cmp -s $I/bin/nb2cleanpdf $NB2CLEANPDF'
+check "warns when bin dir is not on PATH"    'has "is not on your PATH"'
+OUT=$($I/bin/nb2cleanpdf -h 2>&1); RC=$?
+check "installed command runs"               '(( RC == 0 )) && has "Usage:"'
+inst $INST --bin-dir $I/bin
+check "re-install (upgrade) works"           '(( RC == 0 ))'
+OUT=$(PATH=$I/bin:$PATH sh $INST --bin-dir $I/bin </dev/null 2>&1); RC=$?
+check "no PATH warning when on PATH"         '(( RC == 0 )) && ! has "not on your PATH"'
+inst $INST --prefix $I/pfx --link
+check "--prefix + --link symlinks the clone" '(( RC == 0 )) && [[ -L $I/pfx/bin/nb2cleanpdf && $I/pfx/bin/nb2cleanpdf -ef $NB2CLEANPDF ]]'
+inst $INST --bin-dir $I/pfx/bin
+check "copy replaces an earlier symlink"     '(( RC == 0 )) && [[ ! -L $I/pfx/bin/nb2cleanpdf ]]'
+mkdir -p $I/foreign && print 'echo not ours' >$I/foreign/nb2cleanpdf
+inst $INST --bin-dir $I/foreign
+check "refuses to overwrite a foreign file"  '(( RC == 1 )) && [[ $(<$I/foreign/nb2cleanpdf) == "echo not ours" ]]'
+inst $INST --bin-dir $I/foreign --uninstall
+check "refuses to remove a foreign file"     '(( RC == 1 )) && [[ -f $I/foreign/nb2cleanpdf ]]'
+inst $INST --bin-dir $I/foreign --force
+check "--force overwrites"                   '(( RC == 0 )) && cmp -s $I/foreign/nb2cleanpdf $NB2CLEANPDF'
+print 'x' >$I/bin/nbrerun
+inst $INST --bin-dir $I/bin
+check "points out the old nbrerun"           'has "old version is still installed"'
+inst $INST --bin-dir $I/bin --uninstall
+check "--uninstall removes it"               '(( RC == 0 )) && [[ ! -e $I/bin/nb2cleanpdf ]]'
+inst $INST --bin-dir $I/bin --uninstall
+check "--uninstall when absent is fine"      '(( RC == 0 )) && has "nothing to remove"'
+# `curl … | sh` mode: install.sh on its own, the script fetched from a URL
+OUT=$(NB2CLEANPDF_URL=file://$NB2CLEANPDF sh -s -- --bin-dir $I/remote <$INST 2>&1); RC=$?
+check "piped install downloads the script"   '(( RC == 0 )) && has "downloading" && cmp -s $I/remote/nb2cleanpdf $NB2CLEANPDF'
+OUT=$(NB2CLEANPDF_URL=file://$INST sh -s -- --bin-dir $I/remote2 <$INST 2>&1); RC=$?
+check "rejects a download that isn't it"     '(( RC == 1 )) && [[ ! -e $I/remote2/nb2cleanpdf ]]'
+
 # ---------- venv validation ------------------------------------------------------
 section "venv validation"
 V=$WORK/venvs

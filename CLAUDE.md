@@ -3,6 +3,8 @@
 - Reply to the user in Simplified Chinese; code, comments, CLI help and terminal messages stay English.
 - `nb2cleanpdf` is intentionally ONE self-contained zsh file (Python helpers are embedded as heredocs
   and written to `$TMP` at runtime). Don't split it without asking.
+- `install.sh` is POSIX sh (runs via `curl | sh`, dash on Linux). It recognises the script by its
+  3rd line starting with `# nb2cleanpdf — ` — keep that header line.
 - Read `docs/DESIGN.md` before changing behaviour — most "obvious improvements" collide with a recorded decision.
 
 ## Invariants

@@ -16,8 +16,21 @@ It's a single self-contained zsh script for macOS (Linux works too).
 ## Install
 
 ```zsh
-cp nb2cleanpdf ~/.local/bin/        # or anywhere on your PATH
+curl -fsSL https://raw.githubusercontent.com/Yuxin-Ren-SZ/nb2cleanpdf/main/install.sh | sh
 ```
+
+or from a clone:
+
+```zsh
+git clone https://github.com/Yuxin-Ren-SZ/nb2cleanpdf && cd nb2cleanpdf
+./install.sh                 # copies nb2cleanpdf to ~/.local/bin
+./install.sh --link          # symlink instead, so `git pull` updates it
+./install.sh --prefix /usr/local        # or --bin-dir DIR
+./install.sh --uninstall
+```
+
+The installer only writes `<bin-dir>/nb2cleanpdf`, never overwrites a file that isn't
+nb2cleanpdf (unless `--force`), and tells you if the bin dir is not on your `PATH`.
 
 Requirements: zsh, [uv](https://docs.astral.sh/uv/), and a uv-created `.venv` in the
 project. Everything else (jupyter, fzf, …) is checked at start-up, with the command that
