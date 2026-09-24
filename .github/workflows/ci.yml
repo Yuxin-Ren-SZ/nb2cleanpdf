@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: sudo apt-get update -q && sudo apt-get install -y -q zsh
+      # `zsh -n` exits 1 after any `! cmd` even when the syntax is fine,
+      # so a clean parse is "nothing printed", not the exit status.
+      - name: zsh syntax
+        run: |
+          for f in nbrerun tests/run-tests.zsh; do
+            out=$(zsh -n "$f" 2>&1 || true)
+            if [ -n "$out" ]; then echo "$f: $out"; exit 1; fi
+          done
+      - name: python syntax
+        run: python3 -m py_compile tests/make_fixture.py
+
+  test:
+    name: test (${{ matrix.engine }}, ${{ matrix.os }})
+    needs: lint
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest,  engine: chrome }
+          - { os: ubuntu-latest, engine: chrome }
+          - { os: ubuntu-latest, engine: webpdf }
+          - { os: ubuntu-latest, engine: latex }
+          - { os: ubuntu-latest, engine: none }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+
+      - name: install zsh
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -q && sudo apt-get install -y -q zsh
+
+      - name: install LaTeX + pandoc
+        if: matrix.engine == 'latex'
+        run: >
+          sudo apt-get install -y -q --no-install-recommends
+          pandoc texlive-xetex texlive-latex-extra texlive-fonts-recommended
+          texlive-plain-generic texlive-luatex lmodern
+
+      - name: browser in use
+        if: matrix.engine == 'chrome'
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --version
+          else
+            google-chrome --version
+          fi
+
+      - name: run tests
+        run: zsh tests/run-tests.zsh --engine ${{ matrix.engine }}
+
+      - name: upload PDFs and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nbrerun-${{ matrix.engine }}-${{ matrix.os }}
+          include-hidden-files: true
+          if-no-files-found: ignore
+          path: |
+            tests/.work/**/*.pdf
+            tests/.work/**/logs/*.log

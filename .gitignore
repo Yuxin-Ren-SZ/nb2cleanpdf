@@ -1,0 +1,18 @@
+# Python / uv
+.venv/
+__pycache__/
+*.py[cod]
+
+# nbrerun run records and leftovers (also created by the test suite)
+.nbrerun/
+.*.ipynb.nbrerun-tmp
+.ipynb_checkpoints/
+
+# test suite scratch space and artifacts
+tests/.work/
+
+# macOS / editors
+.DS_Store
+.idea/
+.vscode/
+*.swp

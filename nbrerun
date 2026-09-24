@@ -1,0 +1,1007 @@
+#!/usr/bin/env zsh
+# ---------------------------------------------------------------------------
+# nbrerun — cleanly re-execute every Jupyter notebook below the current
+# directory with the project's uv virtualenv, then export each one to PDF.
+#
+#   nbrerun -h        for usage
+#
+# Requirements (checked at start-up; missing ones can be installed on the spot):
+#   required : a uv-created venv (./.venv) containing nbformat, nbclient, ipykernel
+#   PDF      : nbconvert + an installed Chrome/Edge/Brave/Chromium ("chrome", default)
+#              or nbconvert + playwright's bundled Chromium ("webpdf")
+#              or nbconvert + xelatex + pandoc ("latex")
+#   optional : fzf >= 0.36 for the interactive picker (text menu otherwise)
+# ---------------------------------------------------------------------------
+
+emulate -R zsh
+setopt extended_glob pipe_fail
+zmodload zsh/datetime || { print -u2 "zsh/datetime module unavailable"; exit 1 }
+autoload -Uz is-at-least
+
+SCRIPT=${0:t}
+
+# ---------- colours / messages ---------------------------------------------
+if [[ -t 1 ]]; then
+  R=$'\e[31m' G=$'\e[32m' Y=$'\e[33m' C=$'\e[36m' B=$'\e[1m' D=$'\e[2m' N=$'\e[0m' EL=$'\r\e[K'
+  IS_TTY=1
+else
+  R= G= Y= C= B= D= N= EL=$'\n'
+  IS_TTY=0
+fi
+info() { print -r -- "${C}::${N} $*" }
+warn() { print -ru2 -- "${Y}warning:${N} $*" }
+die()  { print -ru2 -- "${R}error:${N} $*"; exit 1 }
+hint() { print -ru2 -- "       ${D}\$${N} $*" }
+
+usage() {
+  cat <<EOF
+${B}${SCRIPT}${N} — cleanly re-run all Jupyter notebooks below the current directory
+with the uv virtualenv in ./.venv, then export each to PDF.
+
+${B}Usage:${N} ${SCRIPT} [options]
+       ${SCRIPT} clean [-n] [-y] [--keep N] [--pdfs [-o DIR] [-i/-e PATTERN]]
+
+${B}Selection${N}
+  -i, --include PATTERN   only keep notebooks matching PATTERN (repeatable, OR-ed)
+  -e, --exclude PATTERN   drop notebooks matching PATTERN (repeatable, applied after -i)
+  -y, --yes               skip the interactive picker and confirmation
+  -n, --dry-run           list the notebooks that would be processed, then exit
+
+${B}Execution${N}
+  -t, --timeout SEC       per-cell timeout in seconds (default: no timeout)
+      --allow-errors      don't stop a notebook at the first failing cell
+      --no-exec           don't re-run notebooks, only export PDFs
+      --no-backup         don't back up notebooks before overwriting them
+      --venv DIR          virtualenv to use (default: .venv)
+      --sync              run 'uv sync' before starting
+
+${B}Dependencies${N}
+  Missing dependencies are listed with the command that installs each one;
+  you're then asked whether to run those commands. Optional ones (fzf) are
+  only mentioned as a tip unless something required is missing too.
+      --install-deps      install missing dependencies (incl. optional) without asking
+
+${B}PDF export${N}
+      --no-pdf            skip PDF export
+      --engine ENGINE     auto (default): chrome if a Chromium-based browser is
+                          installed, else webpdf
+                          chrome : reuse your installed Chrome/Edge/Brave/Chromium
+                          webpdf : playwright's own Chromium (~/Library/Caches/ms-playwright)
+                          latex  : xelatex + pandoc
+      --browser PATH      browser for the chrome engine (binary or .app bundle;
+                          also \$NBRERUN_BROWSER)
+  -o, --output-dir DIR    put PDFs in DIR, mirroring the folder layout
+                          (default: next to each notebook)
+
+${B}Cleaning${N}  (${SCRIPT} clean)
+  Lists what runs left behind, then asks before removing it:
+  run records in .nbrerun/ (logs, backups, failed copies), half-written
+  notebook temp files, and — from runs that were hard-killed — orphaned temp
+  dirs and orphaned helper/browser processes. A run in progress is never touched.
+  Uses the macOS 'trash' command when available, so records can be restored.
+  -n, --dry-run           check only, remove nothing
+  -y, --yes               don't ask
+      --keep N            keep the newest N run records (default 0)
+      --pdfs              also remove exported PDFs of the (filtered) notebooks
+
+${B}Patterns${N}
+  zsh globs with extended_glob. A pattern without '/' is matched against the
+  file name; with '/', against the path relative to here ('*' also crosses '/').
+  A plain word (no wildcard) matches anywhere in the path ('eda', 'analysis').
+  Prefix (#i) for case-insensitive. ${B}Always quote patterns.${N}
+
+${B}Examples${N}
+  ${SCRIPT} -i 'fig*' -e '*scratch*'
+  ${SCRIPT} -i 'analysis/*' -o pdf -t 900
+  ${SCRIPT} -e '(#i)*draft*' -y --no-pdf
+  ${SCRIPT} clean -n                 # just check
+  ${SCRIPT} clean --keep 2           # clean, but keep the two newest runs
+EOF
+}
+
+# ---------- argument parsing -------------------------------------------------
+typeset -a INCLUDES EXCLUDES
+VENV_OPT=.venv TIMEOUT=-1 ENGINE=auto PDF_DIR= BROWSER_OPT=${NBRERUN_BROWSER:-} PDF_TIMEOUT=300
+MODE=run KEEP_RUNS=0 KEEP_SET=0 CLEAN_PDFS=0
+ASSUME_YES=0 INSTALL_DEPS=0 DRY_RUN=0 ALLOW_ERRORS=0 DO_EXEC=1 DO_PDF=1 DO_BACKUP=1 DO_SYNC=0
+
+need_arg() { [[ $# -ge 2 && -n $2 ]] || die "option '$1' needs an argument" }
+
+while (( $# )); do
+  case $1 in
+    -h|--help)        usage; exit 0 ;;
+    -i|--include)     need_arg "$@"; INCLUDES+=("$2"); shift 2 ;;
+    --include=*)      INCLUDES+=("${1#*=}"); shift ;;
+    -e|--exclude)     need_arg "$@"; EXCLUDES+=("$2"); shift 2 ;;
+    --exclude=*)      EXCLUDES+=("${1#*=}"); shift ;;
+    -t|--timeout)     need_arg "$@"; TIMEOUT=$2; shift 2 ;;
+    --timeout=*)      TIMEOUT=${1#*=}; shift ;;
+    -o|--output-dir)  need_arg "$@"; PDF_DIR=$2; shift 2 ;;
+    --output-dir=*)   PDF_DIR=${1#*=}; shift ;;
+    --venv)           need_arg "$@"; VENV_OPT=$2; shift 2 ;;
+    --venv=*)         VENV_OPT=${1#*=}; shift ;;
+    --engine)         need_arg "$@"; ENGINE=$2; shift 2 ;;
+    --engine=*)       ENGINE=${1#*=}; shift ;;
+    --browser)        need_arg "$@"; BROWSER_OPT=$2; shift 2 ;;
+    --browser=*)      BROWSER_OPT=${1#*=}; shift ;;
+    -y|--yes)         ASSUME_YES=1; shift ;;
+    -n|--dry-run)     DRY_RUN=1; shift ;;
+    --allow-errors)   ALLOW_ERRORS=1; shift ;;
+    --no-exec)        DO_EXEC=0; shift ;;
+    --no-pdf)         DO_PDF=0; shift ;;
+    --no-backup)      DO_BACKUP=0; shift ;;
+    --sync)           DO_SYNC=1; shift ;;
+    --install-deps)   INSTALL_DEPS=1; shift ;;
+    --keep)           need_arg "$@"; KEEP_RUNS=$2; KEEP_SET=1; shift 2 ;;
+    --keep=*)         KEEP_RUNS=${1#*=}; KEEP_SET=1; shift ;;
+    --pdfs)           CLEAN_PDFS=1; shift ;;
+    clean)            [[ $MODE == run ]] || die "'clean' given twice"; MODE=clean; shift ;;
+    --)               shift; (( $# )) && die "unexpected argument '$1'"; break ;;
+    -*)               die "unknown option '$1' (see $SCRIPT -h)" ;;
+    *)                die "unexpected argument '$1' — did the shell expand an unquoted pattern? Quote it: -i '*.ipynb'" ;;
+  esac
+done
+
+[[ $KEEP_RUNS == <-> ]] || die "--keep must be a non-negative integer (got '$KEEP_RUNS')"
+if [[ $MODE == run ]] && (( KEEP_SET || CLEAN_PDFS )); then
+  die "--keep and --pdfs only apply to '$SCRIPT clean'"
+fi
+[[ $TIMEOUT == (-|)<-> ]] || die "--timeout must be an integer (got '$TIMEOUT')"
+[[ $ENGINE == (auto|chrome|webpdf|latex) ]] || die "--engine must be auto, chrome, webpdf or latex (got '$ENGINE')"
+(( DO_EXEC || DO_PDF )) || die "--no-exec together with --no-pdf leaves nothing to do"
+(( DO_EXEC )) || DO_BACKUP=0
+if [[ -n $PDF_DIR ]]; then PDF_DIR=${PDF_DIR:a}; fi
+
+# ---------- shared helpers: notebook discovery + filters ----------------------
+VENV=${VENV_OPT:a}
+typeset -a ALL NBS
+discover() {
+  local -a prune=( -name '.?*' -o -name node_modules -o -name __pycache__ -o -name site-packages )
+  local venv_rel=${VENV#$PWD/}
+  [[ $venv_rel != /* ]] && prune+=( -o -path "./$venv_rel" )
+  [[ -n $PDF_DIR && $PDF_DIR == $PWD/* ]] && prune+=( -o -path "./${PDF_DIR#$PWD/}" )
+  local -a out
+  out=( ${(0)"$(command find . -mindepth 1 \( -type d \( "${prune[@]}" \) -prune \) \
+          -o \( -type f -iname '*.ipynb' ! -name '*-checkpoint.ipynb' -print0 \) 2>/dev/null)"} )
+  ALL=( ${(o)${out#./}} )
+}
+
+matches_any() {         # $1 = relative path, rest = patterns
+  local p=$1 base=${1:t} pat
+  shift
+  for pat in "$@"; do
+    if [[ $pat != *[\*\?\[\]\(\)\#\^\~\<\>\|]* ]]; then
+      [[ $p == *${pat}* ]] && return 0             # plain word: substring of the path
+    elif [[ $pat == */* ]]; then
+      [[ $p == ${~pat} ]] && return 0              # glob with '/': whole relative path
+    else
+      [[ $base == ${~pat} ]] && return 0           # glob without '/': file name only
+    fi
+  done
+  return 1
+}
+
+filter_notebooks() {    # ALL -> NBS
+  local f
+  NBS=()
+  for f in "${ALL[@]}"; do
+    (( $#INCLUDES )) && ! matches_any "$f" "${INCLUDES[@]}" && continue
+    (( $#EXCLUDES )) &&   matches_any "$f" "${EXCLUDES[@]}" && continue
+    NBS+=("$f")
+  done
+}
+
+# ---------- `nbrerun clean`: check for and remove leftovers --------------------
+# What a run can leave behind, and how each is recognised:
+#   run records    .nbrerun/<timestamp>/ (logs, backups, failed copies)
+#   temp files     .<name>.ipynb.nbrerun-tmp next to a notebook (hard kill mid-write)
+#   temp dirs      $TMPDIR/nbrerun.<pid>.XXXXXX whose <pid> is no longer running
+#   processes      exec helper / headless browser whose command line points into
+#                  such a dead temp dir (hard-killed run). Kernels need no handling:
+#                  ipykernel exits by itself once its parent process is gone.
+#   PDFs           only with --pdfs: <notebook>.pdf (or under -o DIR)
+human_kb() {
+  local k=${1:-0}
+  if   (( k >= 1048576 )); then printf '%.1f GB' $(( k / 1048576.0 ))
+  elif (( k >= 1024 ));    then printf '%.1f MB' $(( k / 1024.0 ))
+  else printf '%d KB' $k; fi
+}
+size_kb() {             # total size of the given paths, in KB -> REPLY
+  local l t=0
+  (( $# )) || { REPLY=0; return }
+  for l in ${(f)"$(command du -sk -- "$@" 2>/dev/null)"}; do (( t += ${l%%[[:space:]]*} )); done
+  REPLY=$t
+}
+pid_alive() { [[ $1 == <-> ]] && kill -0 $1 2>/dev/null }
+
+run_clean() {
+  local tmp_root=${${TMPDIR:-/tmp}%/} d f line pid cmd owner k
+  local -a live_owners=() stale_tmp=() tmp_files=() runs=() keep_runs=() del_runs=() live_runs=()
+  local -a orph_pids=() orph_cmds=() pdfs=()
+
+  # temp dirs: live ones tell us a run is in progress right now
+  for d in $tmp_root/nbrerun.<->.*(N/); do
+    owner=${${d:t}#nbrerun.}; owner=${owner%%.*}
+    if pid_alive $owner; then live_owners+=$owner; else stale_tmp+=$d; fi
+  done
+
+  # orphaned processes of this user that belong to a dead run's temp dir
+  for line in ${(f)"$(command ps -U $UID -o pid= -o command= 2>/dev/null)"}; do
+    line=${line##[[:space:]]#}
+    pid=${line%%[[:space:]]*}; cmd=${line#*[[:space:]]}
+    [[ $cmd =~ 'nbrerun\.([0-9]+)\.[A-Za-z0-9]{6}' ]] || continue
+    owner=$match[1]
+    (( pid == $$ )) && continue
+    pid_alive $owner && continue
+    orph_pids+=$pid; orph_cmds+=$cmd
+  done
+
+  # half-written notebook files (skipped while a run is active: they may be in use)
+  if (( ! $#live_owners )); then
+    tmp_files=( ${(0)"$(command find . -mindepth 1 \( -type d \( -name '.?*' -o -name node_modules \
+        -o -name __pycache__ -o -name site-packages \) -prune \) \
+        -o \( -type f -name '.*.ipynb.nbrerun-tmp' -print0 \) 2>/dev/null)"} )
+    tmp_files=( ${tmp_files#./} )
+  fi
+
+  # run records, newest first; keep the newest $KEEP_RUNS and any still running
+  runs=( .nbrerun/<->-<->(N/On) )
+  for d in $runs; do
+    if [[ -f $d/.pid ]] && pid_alive "$(<$d/.pid)"; then live_runs+=$d
+    elif (( $#keep_runs < KEEP_RUNS )); then keep_runs+=$d
+    else del_runs+=$d; fi
+  done
+
+  # exported PDFs (opt-in)
+  if (( CLEAN_PDFS )); then
+    discover; filter_notebooks
+    for f in $NBS; do
+      if [[ -n $PDF_DIR ]]; then d=$PDF_DIR/${f:r}.pdf; else d=$PWD/${f:r}.pdf; fi
+      [[ -f $d ]] && pdfs+=$d
+    done
+  fi
+
+  # ---- report ----
+  print -r -- "${C}::${N} ${B}nbrerun clean${N} — $PWD"
+  (( $#live_owners )) && warn "an nbrerun run is in progress (pid ${(j:, :)live_owners}); its files are left alone"
+  local total=$(( $#del_runs + $#tmp_files + $#stale_tmp + $#orph_pids + $#pdfs ))
+  local n_backups=0
+
+  if (( $#runs )); then
+    size_kb $del_runs; local del_kb=$REPLY
+    print -r -- "  ${B}Run records${N}  .nbrerun/  ${D}$#runs run(s); removing $#del_runs ($(human_kb $del_kb)), keeping $(( $#keep_runs + $#live_runs ))${N}"
+    local shown=0
+    for d in $runs; do
+      local -a b=( $d/backup/**/*.ipynb(N.) ) fl=( $d/failed/*.ipynb(N.) )
+      (( ${del_runs[(Ie)$d]} )) && (( n_backups += $#b ))
+      (( ++shown > 12 )) && continue
+      size_kb $d
+      local tag="${R}remove${N}"
+      (( ${live_runs[(Ie)$d]} )) && tag="${Y}live${N}  "
+      (( ${keep_runs[(Ie)$d]} )) && tag="${G}keep${N}  "
+      printf '    %s  %s  %8s   %s\n' "$tag" "${d:t}" "$(human_kb $REPLY)" \
+             "${D}$#b backup(s), $#fl failed copy(ies)${N}"
+    done
+    (( shown > 12 )) && print -r -- "    ${D}… and $(( shown - 12 )) older run(s)${N}"
+  fi
+  if (( $#tmp_files )); then
+    print -r -- "  ${B}Half-written notebook temp files${N}  ${D}$#tmp_files${N}"
+    print -rl -- "${tmp_files[@]/#/    }"
+  fi
+  if (( $#stale_tmp )); then
+    size_kb $stale_tmp
+    print -r -- "  ${B}Orphaned temp dirs${N}  ${D}$#stale_tmp ($(human_kb $REPLY)) — from runs that were killed${N}"
+    print -rl -- "${stale_tmp[@]/#/    }"
+  fi
+  if (( $#orph_pids )); then
+    print -r -- "  ${B}Orphaned processes${N}  ${D}$#orph_pids — helper/browser left by a killed run${N}"
+    for k in {1..$#orph_pids}; do printf '    %6s  %s\n' $orph_pids[k] "${orph_cmds[k][1,110]}"; done
+  fi
+  if (( CLEAN_PDFS )); then
+    size_kb $pdfs
+    print -r -- "  ${B}Exported PDFs${N}  ${D}$#pdfs ($(human_kb $REPLY))${N}"
+    local -a rel=( ${pdfs#$PWD/} )
+    (( $#rel )) && print -rl -- "${rel[@]/#/    }"
+  fi
+
+  if (( total == 0 )); then
+    print -r -- "  ${G}✓ nothing to clean${N}"
+    return 0
+  fi
+
+  local use_trash=$(( $+commands[trash] ))
+  print
+  if (( use_trash )); then
+    info "run records and PDFs go to the ${B}Trash${N}; temp files/dirs are deleted"
+  else
+    info "everything above marked for removal is ${B}deleted permanently${N}"
+  fi
+  (( n_backups )) && warn "this includes $n_backups notebook backup(s) — use --keep N to keep the newest runs"
+
+  (( DRY_RUN )) && { print -r -- "${D}(check only — nothing removed; run without -n to clean)${N}"; return 0 }
+
+  if (( ! ASSUME_YES )); then
+    [[ -t 0 ]] || die "no TTY to confirm — re-run with -y to clean without asking"
+    local reply
+    read -r "reply?${C}::${N} Clean the $total item(s) above? [y/N] " </dev/tty
+    [[ $reply == [yY]* ]] || { print -r -- "Nothing removed."; return 0 }
+  fi
+
+  # ---- clean: processes first (they hold the temp dirs), then files ----
+  local fails=0
+  if (( $#orph_pids )); then
+    kill -TERM $orph_pids 2>/dev/null
+    for k in 1 2 3 4 5 6; do
+      local -a left=(); for pid in $orph_pids; do pid_alive $pid && left+=$pid; done
+      (( $#left )) || break; sleep 0.5
+    done
+    (( $#left )) && kill -KILL $left 2>/dev/null
+    print -r -- "  ${G}✓${N} stopped $#orph_pids orphaned process(es)"
+  fi
+  if (( $#stale_tmp )); then
+    rm -rf -- $stale_tmp && print -r -- "  ${G}✓${N} removed $#stale_tmp temp dir(s)" || (( fails++ ))
+  fi
+  if (( $#tmp_files )); then
+    rm -f -- $tmp_files && print -r -- "  ${G}✓${N} removed $#tmp_files temp file(s)" || (( fails++ ))
+  fi
+  local -a to_bin=( ${del_runs:a} $pdfs )
+  if (( $#to_bin )); then
+    if (( use_trash )); then command trash $to_bin; else rm -rf -- $to_bin; fi
+    if (( $? == 0 )); then
+      (( $#del_runs )) && print -r -- "  ${G}✓${N} removed $#del_runs run record(s)"
+      (( $#pdfs ))     && print -r -- "  ${G}✓${N} removed $#pdfs PDF(s)"
+    else
+      (( fails++ ))
+    fi
+  fi
+  [[ -d .nbrerun ]] && rmdir .nbrerun 2>/dev/null   # only if now empty
+  (( fails )) && die "some items could not be removed (see messages above)"
+  print -r -- "${G}${B}Clean.${N}"
+}
+
+if [[ $MODE == clean ]]; then
+  run_clean
+  exit $?
+fi
+
+# ---------- 1. the uv virtualenv (required) -----------------------------------
+if [[ ! -d $VENV ]]; then
+  print -ru2 -- "${R}error:${N} no virtualenv found at '$VENV_OPT' in $PWD"
+  print -ru2 -- "       This script runs the notebooks with a venv created by uv. Create one with:"
+  hint "uv init --bare && uv add --dev jupyter   # new project"
+  hint "uv sync                                  # existing pyproject.toml"
+  hint "uv venv && uv pip install jupyter        # plain venv, no pyproject"
+  exit 1
+fi
+[[ -f $VENV/pyvenv.cfg ]] || die "'$VENV_OPT' is not a virtualenv (no pyvenv.cfg)"
+if ! command grep -Eq '^[[:space:]]*uv[[:space:]]*=' $VENV/pyvenv.cfg; then
+  die "'$VENV_OPT' was not created by uv (pyvenv.cfg has no 'uv =' entry).
+       Recreate it with uv:  rm -rf '$VENV_OPT' && uv venv   (then reinstall deps, e.g. uv sync)"
+fi
+PY=$VENV/bin/python
+[[ -x $PY ]] || die "'$PY' is missing or not executable — the venv looks broken; recreate it with 'uv venv'"
+
+
+# ---------- 2. dependency checks (+ optional auto-install) -------------------
+# Each missing dependency is recorded with the exact shell command that installs
+# it. That command is always printed (manual route); with consent it is also run.
+typeset -U path
+[[ -d /Library/TeX/texbin ]] && path+=(/Library/TeX/texbin)   # BasicTeX/MacTeX binaries
+
+BREW=${commands[brew]:-}
+if [[ -z $BREW ]]; then
+  for b in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+    [[ -x $b ]] && { BREW=$b; path=(${b:h} $path); break }
+  done
+fi
+NO_BREW_NOTE="Homebrew not found — install it first from https://brew.sh (then re-run)"
+
+VENV_REL=${VENV#$PWD/}
+if [[ -f pyproject.toml ]]; then
+  UV_ADD="uv add --dev"
+  [[ $VENV != $PWD/.venv ]] && UV_ADD="UV_PROJECT_ENVIRONMENT=${(q)VENV_REL} $UV_ADD"
+  UV_ADD_NOTE="adds it to the dev dependency group in pyproject.toml / uv.lock"
+else
+  UV_ADD="uv pip install --python ${(q)VENV_REL}"
+  UV_ADD_NOTE=
+fi
+
+# Packages nbconvert's LaTeX template needs (BasicTeX lacks several of them).
+TEX_STY=( tcolorbox.sty pgf.sty environ.sty trimspaces.sty upquote.sty adjustbox.sty
+          titling.sty enumitem.sty ulem.sty soul.sty mathrsfs.sty eurosym.sty
+          booktabs.sty caption.sty fontspec.sty unicode-math.sty )
+TEX_PKGS="collection-fontsrecommended tcolorbox pgf environ trimspaces upquote adjustbox titling enumitem ulem soul jknapltx rsfs eurosym booktabs caption fontspec unicode-math"
+
+# Chromium-based browsers already on the Mac; the first one found is reused
+# for PDF printing so nothing has to be downloaded.
+BROWSER_CANDIDATES=(
+  "Google Chrome.app/Contents/MacOS/Google Chrome"
+  "Chromium.app/Contents/MacOS/Chromium"
+  "Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
+  "Brave Browser.app/Contents/MacOS/Brave Browser"
+  "Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta"
+  "Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary"
+)
+BROWSER=
+find_browser() {
+  BROWSER=
+  if [[ -n $BROWSER_OPT ]]; then
+    local b=${BROWSER_OPT:a}
+    if [[ -d $b && $b == *.app ]]; then           # accept an .app bundle
+      local -a bins=( $b/Contents/MacOS/*(N*) )
+      b=${bins[1]:-}
+    fi
+    [[ -n $b && -x $b && ! -d $b ]] || die "--browser: '$BROWSER_OPT' is not an executable browser"
+    BROWSER=$b; return 0
+  fi
+  local c d
+  for c in $BROWSER_CANDIDATES; do
+    for d in /Applications ~/Applications; do
+      [[ -x "$d/$c" ]] && { BROWSER="$d/$c"; return 0 }
+    done
+  done
+  for c in google-chrome google-chrome-stable chromium chromium-browser microsoft-edge; do  # Linux / PATH
+    (( $+commands[$c] )) && { BROWSER=$commands[$c]; return 0 }
+  done
+  return 1
+}
+browser_label() { [[ $BROWSER == *.app/* ]] && print -r -- ${${BROWSER%%.app/*}:t} || print -r -- $BROWSER }
+
+ENGINE_WAS_AUTO=0
+if (( DO_PDF )) && [[ $ENGINE == (auto|chrome) ]]; then find_browser; fi
+if [[ $ENGINE == auto ]]; then
+  ENGINE_WAS_AUTO=1
+  if [[ -n $BROWSER ]] || (( ! DO_PDF )); then ENGINE=chrome; else ENGINE=webpdf; fi
+fi
+
+py_has() { "$PY" -c "import $1" &>/dev/null }
+chromium_ok() {
+  "$PY" - &>/dev/null <<'PYEOF'
+from playwright.sync_api import sync_playwright
+with sync_playwright() as p:
+    p.chromium.launch().close()
+PYEOF
+}
+wants_picker() { (( ! ASSUME_YES )) && [[ -t 0 && -t 1 ]] }
+
+typeset -a DEP_NAME DEP_REQ DEP_AUTO DEP_CMD DEP_WHY DEP_NOTE
+add_dep() {   # name required(0/1) auto-installable(0/1) command why [note]
+  DEP_NAME+=("$1"); DEP_REQ+=("$2"); DEP_AUTO+=("$3"); DEP_CMD+=("$4"); DEP_WHY+=("$5"); DEP_NOTE+=("${6:-}")
+}
+
+check_deps() {   # $1 = sync | all
+  DEP_NAME=() DEP_REQ=() DEP_AUTO=() DEP_CMD=() DEP_WHY=() DEP_NOTE=()
+  local has_brew=$(( ${#BREW} > 0 )) brew_note= need_uv=0 m
+  (( has_brew )) || brew_note=$NO_BREW_NOTE
+
+  local -a mods=()
+  if [[ $1 == sync ]]; then
+    need_uv=1
+  else
+    (( DO_EXEC )) && for m in nbformat nbclient ipykernel; do py_has $m || mods+=$m; done
+    (( DO_PDF ))  && { py_has nbconvert || mods+=nbconvert }
+    (( $#mods )) && need_uv=1
+    (( DO_PDF )) && [[ $ENGINE == webpdf ]] && ! py_has playwright && need_uv=1
+  fi
+
+  # uv is the installer for everything that goes into the venv
+  local uv_auto=1
+  if (( need_uv && ! $+commands[uv] )); then
+    add_dep uv 1 $has_brew "brew install uv" "Python package manager used to install into the venv" "$brew_note"
+    uv_auto=$has_brew
+  fi
+  [[ $1 == sync ]] && return
+
+  (( $#mods )) && add_dep jupyter 1 $uv_auto "$UV_ADD jupyter" \
+      "venv lacks: ${mods[*]}" "$UV_ADD_NOTE"
+
+  local no_chrome_note=
+  (( ENGINE_WAS_AUTO )) && no_chrome_note="no Chrome/Edge/Brave found to reuse; alternatively: brew install --cask google-chrome"
+
+  if (( DO_PDF )) && [[ $ENGINE == chrome ]]; then
+    find_browser || add_dep "Google Chrome" 1 $has_brew "brew install --cask google-chrome" \
+        "browser used to print PDFs (or pass --browser PATH)" "$brew_note"
+  elif (( DO_PDF )) && [[ $ENGINE == webpdf ]]; then
+    if ! py_has playwright; then
+      add_dep "nbconvert[webpdf]" 1 $uv_auto "$UV_ADD 'nbconvert[webpdf]'" \
+          "playwright, for HTML→PDF rendering" "$UV_ADD_NOTE"
+      add_dep chromium 1 $uv_auto "${(q)VENV_REL}/bin/python -m playwright install chromium" \
+          "headless browser that prints the PDF" \
+          "shared by all projects in ~/Library/Caches/ms-playwright${no_chrome_note:+; $no_chrome_note}"
+    elif ! chromium_ok; then
+      add_dep chromium 1 1 "${(q)VENV_REL}/bin/python -m playwright install chromium" \
+          "headless browser that prints the PDF" \
+          "shared by all projects in ~/Library/Caches/ms-playwright${no_chrome_note:+; $no_chrome_note}"
+    fi
+  elif (( DO_PDF )); then
+    (( $+commands[pandoc] )) || add_dep pandoc 1 $has_brew "brew install pandoc" \
+        "converts Markdown cells to LaTeX" "$brew_note"
+    local tex_missing=0 sty
+    if (( ! $+commands[xelatex] )); then
+      add_dep "BasicTeX (xelatex)" 1 $has_brew "brew install --cask basictex" \
+          "LaTeX engine" "${brew_note:-asks for your macOS password; ~100 MB}"
+      tex_missing=1
+    else
+      for sty in $TEX_STY; do kpsewhich $sty &>/dev/null || { tex_missing=1; break }; done
+    fi
+    (( tex_missing )) && add_dep "LaTeX packages" 1 1 \
+        "sudo tlmgr update --self && sudo tlmgr install $TEX_PKGS" \
+        "used by nbconvert's LaTeX template" "asks for your macOS password"
+  fi
+
+  if wants_picker; then
+    if (( ! $+commands[fzf] )); then
+      add_dep fzf 0 $has_brew "brew install fzf" "picker with previews (text menu otherwise)" "$brew_note"
+    else
+      local v=${${(s: :)"$(fzf --version 2>/dev/null)"}[1]}
+      is-at-least 0.36 $v 2>/dev/null || add_dep "fzf >= 0.36" 0 $has_brew "brew upgrade fzf" \
+          "installed fzf $v is too old for the picker" "$brew_note"
+    fi
+  fi
+}
+
+report_deps() {
+  local k mark kind
+  print; print -r -- "${C}::${N} ${B}dependency check${N}"
+  for k in {1..$#DEP_NAME}; do
+    if (( DEP_REQ[k] )); then mark="${R}✗${N}" kind=required; else mark="${Y}○${N}" kind=optional; fi
+    printf '  %s %-20s %s%-9s%s %s\n' "$mark" "$DEP_NAME[k]" "$D" $kind "$N" "$DEP_WHY[k]"
+    print -r -- "        ${D}\$${N} $DEP_CMD[k]"
+    [[ -n $DEP_NOTE[k] ]] && print -r -- "        ${D}↳ $DEP_NOTE[k]${N}"
+  done
+  print
+}
+
+ensure_deps() {   # $1 = sync | all
+  local round k reply n_req
+  local -a todo
+  for round in 1 2 3; do
+    check_deps $1
+    (( $#DEP_NAME )) || return 0
+    n_req=${#${(M)DEP_REQ:#1}}
+
+    if (( n_req == 0 && ! INSTALL_DEPS )); then   # only optional ones: a tip, never a prompt
+      for k in {1..$#DEP_NAME}; do
+        info "tip: ${B}$DEP_CMD[k]${N} — $DEP_WHY[k]  (or --install-deps)"
+      done
+      return 0
+    fi
+
+    report_deps
+    (( round == 3 )) && die "dependencies still missing after installation — see the list above"
+
+    todo=()
+    for k in {1..$#DEP_NAME}; do (( DEP_AUTO[k] )) && todo+=$k; done
+    if (( ! $#todo )); then
+      print -ru2 -- "${R}error:${N} none of these can be installed automatically — run the commands above yourself, then re-run."
+      exit 1
+    fi
+
+    if (( INSTALL_DEPS )); then
+      info "installing $#todo item(s) (--install-deps)…"
+    elif [[ -t 0 && -t 1 ]]; then
+      (( $#todo < $#DEP_NAME )) && warn "items marked with ↳ Homebrew need manual installation; the rest can be done now"
+      read -r "reply?${C}::${N} Install the $#todo item(s) above now? [y/N] " </dev/tty
+      if [[ $reply != [yY]* ]]; then
+        print -r -- "Not installing. Run the commands above manually (or re-run with --install-deps)."
+        exit 1
+      fi
+    else
+      print -ru2 -- "${R}error:${N} missing dependencies and no TTY to ask — run the commands above, or re-run with --install-deps"
+      exit 1
+    fi
+
+    for k in $todo; do
+      print -r -- "${C}::${N} ${B}$DEP_NAME[k]${N}: ${D}$DEP_CMD[k]${N}"
+      if ! eval "$DEP_CMD[k]"; then
+        print -ru2 -- "${R}error:${N} installing '$DEP_NAME[k]' failed (command above). Fix it and re-run."
+        exit 1
+      fi
+      rehash
+    done
+    info "re-checking dependencies…"
+  done
+}
+
+if (( ! DRY_RUN )); then
+  if (( DO_SYNC )); then
+    [[ -f pyproject.toml ]] || die "--sync needs a pyproject.toml in $PWD"
+    ensure_deps sync
+    info "uv sync"
+    UV_PROJECT_ENVIRONMENT=$VENV uv sync || die "'uv sync' failed"
+  fi
+  ensure_deps all
+  if (( DO_PDF )); then
+    case $ENGINE in
+      chrome) info "PDF engine: ${B}chrome${N} — reusing $(browser_label)" ;;
+      webpdf) info "PDF engine: ${B}webpdf${N} — playwright's Chromium" ;;
+      latex)  info "PDF engine: ${B}latex${N} — xelatex" ;;
+    esac
+  fi
+  [[ -n ${PYTHONPATH:-} ]] && warn "PYTHONPATH is set ($PYTHONPATH) — notebooks will see it; unset it for a truly clean run"
+fi
+
+FZF_OK=0
+if (( $+commands[fzf] )); then
+  fzf_ver=${${(s: :)"$(fzf --version 2>/dev/null)"}[1]}
+  is-at-least 0.36 $fzf_ver 2>/dev/null && FZF_OK=1
+fi
+
+# ---------- 3. discover + filter notebooks ------------------------------------
+discover
+(( $#ALL )) || die "no .ipynb files found under $PWD (hidden dirs, .venv and node_modules are skipped)"
+filter_notebooks
+info "found ${B}$#ALL${N} notebook(s); ${B}$#NBS${N} after filters"
+(( $#NBS )) || die "no notebooks left after --include/--exclude filters"
+
+if (( DRY_RUN )); then
+  print -rl -- "${NBS[@]/#/  }"
+  exit 0
+fi
+
+# ---------- temp workspace (kernelspec, helpers) -------------------------------
+# pid in the name lets `nbrerun clean` tell live runs from orphaned ones
+TMP=$(mktemp -d "${${TMPDIR:-/tmp}%/}/nbrerun.$$.XXXXXX") || die "mktemp failed"
+INTERRUPTED=0
+trap 'INTERRUPTED=1' INT
+trap 'rm -rf -- "$TMP"; [[ -n ${RUN_DIR:-} ]] && rm -f -- "$RUN_DIR/.pid"' EXIT
+
+# preview helper for fzf
+cat >$TMP/preview.py <<'PYEOF'
+import json, os, sys, time
+p = sys.argv[1]
+try:
+    with open(p, encoding="utf-8") as fh:
+        nb = json.load(fh)
+except Exception as e:
+    print(f"cannot parse notebook: {e}"); sys.exit()
+cells = nb.get("cells", [])
+src = lambda c: "".join(c.get("source", "")) if isinstance(c.get("source"), list) else c.get("source", "")
+code = [c for c in cells if c.get("cell_type") == "code"]
+ks = nb.get("metadata", {}).get("kernelspec", {}) or {}
+st = os.stat(p)
+print(p)
+print(f"size     {st.st_size/1024:,.1f} KiB   modified {time.strftime('%Y-%m-%d %H:%M', time.localtime(st.st_mtime))}")
+print(f"cells    {len(cells)} total, {len(code)} code, {sum(bool(c.get('outputs')) for c in code)} with output")
+print(f"kernel   {ks.get('display_name', '?')} ({ks.get('language', '?')})")
+print("─" * 48)
+for c in cells[:8]:
+    lines = src(c).splitlines()
+    print(f"[{c.get('cell_type')}]")
+    print("\n".join(lines[:6]) + ("\n…" if len(lines) > 6 else ""))
+    print()
+PYEOF
+
+if (( DO_PDF )) && [[ $ENGINE == chrome ]]; then
+  cat >$TMP/chrome_pdf.py <<'PYEOF'
+# Print an nbconvert HTML file to PDF with an existing Chrome-family browser.
+import os, pathlib, signal, subprocess, sys, time
+browser, html, pdf, profile, timeout = sys.argv[1:6]
+page = pathlib.Path(html)
+# same as playwright's print_background=True: keep code-cell / table backgrounds
+css = "<style>*{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}</style>"
+text = page.read_text(encoding="utf-8")
+text = text.replace("</head>", css + "</head>", 1) if "</head>" in text else css + text
+page.write_text(text, encoding="utf-8")
+cmd = [browser, "--headless=new", "--disable-gpu", "--hide-scrollbars",
+       "--no-first-run", "--no-default-browser-check", "--disable-extensions",
+       f"--user-data-dir={profile}",           # throw-away profile: never touches your real one
+       "--no-pdf-header-footer", "--print-to-pdf-no-header",   # new + old flag spelling
+       "--virtual-time-budget=20000",          # let MathJax etc. finish before printing
+       f"--print-to-pdf={pdf}", page.resolve().as_uri()]
+out = pathlib.Path(pdf)
+out.unlink(missing_ok=True)
+
+def pdf_complete():
+    # Chrome (seen with 153 on macOS) may write the PDF and then never exit,
+    # so don't wait for the process: wait for a finished, stable file.
+    try:
+        size = out.stat().st_size
+        with out.open("rb") as fh:
+            fh.seek(max(0, size - 64)); tail = fh.read()
+    except OSError:
+        return False
+    if size == 0 or b"%%EOF" not in tail: return False
+    time.sleep(0.5)
+    return out.stat().st_size == size
+
+# own process group, so the browser and all its helpers can be stopped together
+p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, start_new_session=True)
+deadline, rc = time.monotonic() + float(timeout), 1
+try:
+    while True:
+        if pdf_complete(): rc = 0; break
+        if p.poll() is not None:
+            rc = 0 if pdf_complete() else 1
+            if rc: print(f"browser exited with status {p.returncode} and wrote no PDF", file=sys.stderr)
+            break
+        if time.monotonic() > deadline:
+            print(f"browser did not finish within {timeout}s", file=sys.stderr); break
+        time.sleep(0.2)
+finally:
+    if p.poll() is None:
+        try: os.killpg(p.pid, signal.SIGTERM)
+        except ProcessLookupError: pass
+        try: p.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try: os.killpg(p.pid, signal.SIGKILL)
+            except ProcessLookupError: pass
+            p.wait()
+sys.exit(rc)
+PYEOF
+fi
+
+if (( DO_EXEC )); then
+  # A throw-away kernelspec that points at the venv's interpreter, isolated from
+  # any user/system kernelspecs that might shadow "python3".
+  KERNEL_NAME="nbrerun-$$"
+  mkdir -p $TMP/jupyter/kernels/$KERNEL_NAME
+  "$PY" - $TMP/jupyter/kernels/$KERNEL_NAME/kernel.json "$PY" <<'PYEOF' || die "could not write kernelspec"
+import json, sys
+json.dump({"argv": [sys.argv[2], "-m", "ipykernel_launcher", "-f", "{connection_file}"],
+           "display_name": "nbrerun (uv venv)", "language": "python",
+           "metadata": {"debugger": False}}, open(sys.argv[1], "w"))
+PYEOF
+  export JUPYTER_PATH="$TMP/jupyter${JUPYTER_PATH:+:$JUPYTER_PATH}"
+  export JUPYTER_PLATFORM_DIRS=1 PYDEVD_DISABLE_FILE_VALIDATION=1
+  # make `!python`, `!pip`, subprocess, etc. inside notebooks resolve to the venv
+  export VIRTUAL_ENV=$VENV PATH="$VENV/bin:$PATH"
+  # env vars that make runs non-reproducible (MPLBACKEND=macosx would pop windows
+  # instead of rendering inline plots)
+  unset MPLBACKEND PYTHONSTARTUP
+
+  cat >$TMP/exec.py <<'PYEOF'
+import os, shutil, sys, time, traceback
+import nbformat
+from nbclient import NotebookClient
+from nbclient.exceptions import CellExecutionError, CellTimeoutError, DeadKernelError
+
+src, kernel, timeout, allow_errors, failed_copy, progress, errfile = sys.argv[1:8]
+timeout = None if int(timeout) <= 0 else int(timeout)
+t0 = time.time()
+
+def err(msg):
+    print(msg, file=sys.stderr)                       # full log
+    with open(errfile, "a", encoding="utf-8") as fh:  # short summary shown on screen
+        fh.write(msg + "\n")
+
+def tty(msg):
+    if progress == "1":
+        try: os.write(3, msg.encode())
+        except OSError: pass
+
+nb = nbformat.read(src, as_version=4)
+ks = nb.metadata.get("kernelspec")
+lang = ((ks or {}).get("language") or nb.metadata.get("language_info", {}).get("name") or "python").lower()
+if lang != "python":
+    err(f"notebook uses a non-Python kernel ({(ks or {}).get('name')}, language={lang}); skipped")
+    sys.exit(3)
+
+# start from a clean slate: no outputs, no execution counts, no timing metadata
+for cell in nb.cells:
+    if cell.cell_type == "code":
+        cell.outputs = []
+        cell.execution_count = None
+        cell.metadata.pop("execution", None)
+
+n = len(nb.cells)
+client = NotebookClient(
+    nb, kernel_name=kernel, timeout=timeout, allow_errors=(allow_errors == "1"),
+    record_timing=False,
+    resources={"metadata": {"path": os.path.dirname(os.path.abspath(src))}},  # cwd = notebook dir
+)
+client.on_cell_start = lambda cell, cell_index: tty(
+    f"\r\033[K  \033[2m▶ executing… cell {cell_index + 1}/{n}  ({time.time() - t0:.0f}s)\033[0m")
+
+rc = 0
+try:
+    client.execute()
+except CellTimeoutError as e:
+    err(f"cell timed out: {e}"); rc = 4
+except CellExecutionError as e:
+    err(str(e).strip()); rc = 1
+except DeadKernelError as e:
+    err(f"kernel died: {e}"); rc = 5
+except Exception:
+    err(traceback.format_exc().strip()); rc = 2
+
+# don't leak the temporary kernel name into the saved notebook
+if ks is not None: nb.metadata["kernelspec"] = ks
+else: nb.metadata.pop("kernelspec", None)
+
+if rc == 0:
+    d, name = os.path.split(os.path.abspath(src))
+    tmp = os.path.join(d, f".{name}.nbrerun-tmp")
+    try:
+        nbformat.write(nb, tmp)
+        shutil.copymode(src, tmp)
+        os.replace(tmp, src)            # atomic: original is never half-written
+    finally:
+        if os.path.exists(tmp): os.remove(tmp)
+else:
+    os.makedirs(os.path.dirname(failed_copy), exist_ok=True)
+    nbformat.write(nb, failed_copy)     # partially executed copy, for debugging
+    print(f"\npartially executed copy: {failed_copy}", file=sys.stderr)
+sys.exit(rc)
+PYEOF
+fi
+
+# ---------- 5. interactive (un)selection -------------------------------------
+select_fzf() {
+  local out
+  out=$(print -rl -- "${NBS[@]}" | fzf --multi --reverse --height=85% \
+          --bind 'load:select-all' --bind 'ctrl-a:toggle-all' \
+          --prompt='notebooks> ' --marker='✓' \
+          --header=$'All notebooks start selected — unselect the ones to skip.\nTAB toggle · CTRL-A toggle all · ENTER confirm · ESC abort' \
+          --preview "${(q)PY} ${(q)TMP}/preview.py {}" --preview-window='right,55%,wrap')
+  local rc=$?
+  (( rc == 130 )) && die "aborted"
+  (( rc != 0 )) && die "fzf exited with status $rc"
+  NBS=( ${(f)out} )
+}
+
+select_menu() {
+  local i tok a b k reply
+  print
+  for i in {1..$#NBS}; do printf '  %s%3d)%s %s\n' "$D" $i "$N" "$NBS[i]"; done
+  print
+  read -r "reply?Numbers/ranges to ${B}EXCLUDE${N} (e.g. '2 5-7'), Enter = keep all, q = quit: " </dev/tty
+  [[ $reply == [qQ]* ]] && die "aborted"
+  local -A drop
+  for tok in ${=reply//,/ }; do
+    if [[ $tok == <->-<-> ]]; then
+      a=${tok%-*} b=${tok#*-}; for (( k=a; k<=b; k++ )); do drop[$k]=1; done
+    elif [[ $tok == <-> ]]; then drop[$tok]=1
+    else warn "ignoring '$tok'"; fi
+  done
+  local -a kept=()
+  for i in {1..$#NBS}; do (( ${+drop[$i]} )) || kept+=("$NBS[i]"); done
+  NBS=( "${kept[@]}" )
+}
+
+if (( ! ASSUME_YES )); then
+  if [[ -t 0 && -t 1 ]]; then
+    if (( FZF_OK )); then select_fzf; else
+      select_menu
+    fi
+    (( $#NBS )) || die "nothing selected"
+    print; info "${B}$#NBS${N} notebook(s) selected:"
+    print -rl -- "${NBS[@]/#/    }"
+    what=(); (( DO_EXEC )) && what+="re-run (in place)"; (( DO_PDF )) && what+="export PDF ($ENGINE)"
+    read -r "reply?${C}::${N} ${(j: + :)what}? [Y/n] " </dev/tty
+    [[ -z $reply || $reply == [yY]* ]] || die "aborted"
+  else
+    info "no TTY — skipping interactive selection (use -y to silence this)"
+  fi
+fi
+
+# ---------- 6. run ------------------------------------------------------------
+RUN_DIR=$PWD/.nbrerun/$(strftime %Y%m%d-%H%M%S $EPOCHSECONDS)
+mkdir -p $RUN_DIR/logs || die "cannot create $RUN_DIR"
+print -r -- $$ >$RUN_DIR/.pid          # marks the run as live for `nbrerun clean`
+typeset -A EXEC_ST PDF_ST LOGS
+typeset -a DONE=()
+
+elapsed() { printf '%.1fs' $(( EPOCHREALTIME - $1 )) }
+
+export_pdf() {   # $1 notebook, $2 log, $3 index -> writes PDF, returns status
+  local nb=$1 log=$2 out=$TMP/pdf/$3 dest
+  if [[ -n $PDF_DIR ]]; then dest=$PDF_DIR/${nb:r}.pdf; else dest=$PWD/${nb:r}.pdf; fi
+  mkdir -p $out
+  local -a args=( --output-dir $out --output out )
+  case $ENGINE in
+    chrome) args+=( --to html --template webpdf --embed-images ) ;;
+    webpdf) args+=( --to webpdf --embed-images ) ;;
+    latex)  args+=( --to pdf ) ;;
+  esac
+  print -r -- "---- nbconvert ($ENGINE) $(strftime '%F %T' $EPOCHSECONDS)" >>$log
+  ( cd -- ${nb:h} && "$PY" -m nbconvert "${args[@]}" "./${nb:t}" ) >>$log 2>&1 || return 1
+  if [[ $ENGINE == chrome ]]; then
+    local -a htmls=( $out/*.html(N) )
+    (( $#htmls == 1 )) || { print -r -- "nbconvert produced no HTML" >>$log; return 1 }
+    print -r -- "---- $BROWSER --print-to-pdf" >>$log
+    "$PY" $TMP/chrome_pdf.py "$BROWSER" $htmls[1] $out/out.pdf $TMP/chrome-profile $PDF_TIMEOUT >>$log 2>&1 || return 1
+  fi
+  local -a produced=( $out/*.pdf(N) )
+  (( $#produced == 1 )) || { print -r -- "nbconvert produced no PDF" >>$log; return 1 }
+  mkdir -p -- ${dest:h} && mv -f -- $produced[1] $dest || return 1
+  REPLY=${dest#$PWD/}
+}
+
+show_tail() { tail -n ${2:-15} -- $1 | cut -c1-220 | sed 's/^/    │ /'; true }
+show_pdf_error() {   # LaTeX errors ("! ...") are buried in a huge transcript; surface them
+  local -a errs=( ${(f)"$(command grep -oE '! [^\\]{3,200}' -- $1 | command grep -v '^! Emergency stop' | awk '!seen[$0]++' | head -n 5)"} )
+  if (( $#errs )); then print -rl -- "${errs[@]/#/    │ }"; else show_tail $1 12; fi
+}
+
+total=$#NBS
+T_START=$EPOCHREALTIME
+for (( i = 1; i <= total; i++ )); do
+  (( INTERRUPTED )) && break
+  nb=$NBS[i]
+  slug="$(printf '%03d' $i)_${${nb:r}//\//__}"
+  log=$RUN_DIR/logs/$slug.log
+  LOGS[$nb]=$log
+  DONE+=("$nb")
+  print -r -- "${C}[$i/$total]${N} ${B}$nb${N}"
+  print -r -- "==== $nb" >$log
+
+  exec_ok=1
+  if (( DO_EXEC )); then
+    if (( DO_BACKUP )); then
+      mkdir -p -- $RUN_DIR/backup/${nb:h} && cp -p -- $nb $RUN_DIR/backup/$nb
+    fi
+    t0=$EPOCHREALTIME
+    : >$TMP/err
+    (( IS_TTY )) && print -n -- "  ${D}▶ executing…${N}"
+    "$PY" $TMP/exec.py "$nb" "$KERNEL_NAME" "$TIMEOUT" "$ALLOW_ERRORS" \
+        "$RUN_DIR/failed/$slug.ipynb" "$IS_TTY" "$TMP/err" 3>&1 >>$log 2>&1
+    rc=$?
+    (( IS_TTY )) && print -n -- "$EL"
+    if (( INTERRUPTED )); then
+      EXEC_ST[$nb]=interrupted; print -r -- "  ${Y}■ interrupted${N} (notebook left untouched)"; break
+    fi
+    case $rc in
+      0) EXEC_ST[$nb]=ok;      print -r -- "  ${G}✓ executed${N} $(elapsed $t0)" ;;
+      3) EXEC_ST[$nb]=skipped; print -r -- "  ${Y}– skipped${N}: non-Python kernel" ;;
+      4) EXEC_ST[$nb]=timeout; print -r -- "  ${R}✗ cell timed out${N} after $(elapsed $t0) — notebook left untouched" ;;
+      *) EXEC_ST[$nb]=FAILED;  print -r -- "  ${R}✗ execution failed${N} after $(elapsed $t0) — notebook left untouched" ;;
+    esac
+    if (( rc != 0 )); then
+      exec_ok=0
+      (( rc != 3 )) && show_tail $TMP/err 25 && print -r -- "    partial copy: ${RUN_DIR#$PWD/}/failed/$slug.ipynb"
+      print -r -- "    full log:     ${log#$PWD/}"
+    fi
+  else
+    EXEC_ST[$nb]=-
+  fi
+
+  if (( DO_PDF )); then
+    if (( ! exec_ok )); then
+      PDF_ST[$nb]=skipped; print -r -- "  ${D}– PDF skipped (execution did not succeed)${N}"
+    else
+      t0=$EPOCHREALTIME
+      (( IS_TTY )) && print -n -- "  ${D}▶ exporting PDF…${N}"
+      export_pdf "$nb" "$log" $i; rc=$?
+      (( IS_TTY )) && print -n -- "$EL"
+      if (( INTERRUPTED )); then PDF_ST[$nb]=interrupted; print -r -- "  ${Y}■ interrupted${N}"; break; fi
+      if (( rc == 0 )); then
+        PDF_ST[$nb]=ok; print -r -- "  ${G}✓ PDF${N} → $REPLY ($(elapsed $t0))"
+      else
+        PDF_ST[$nb]=FAILED; print -r -- "  ${R}✗ PDF export failed${N}"; show_pdf_error $log
+        print -r -- "    full log: ${log#$PWD/}"
+      fi
+    fi
+  else
+    PDF_ST[$nb]=-
+  fi
+done
+
+# ---------- 7. summary ----------------------------------------------------------
+fmt() {   # colourised, fixed-width status cell
+  local t=${(r:12:)1}
+  case $1 in
+    ok)             print -rn -- "${G}${t}${N}" ;;
+    FAILED|timeout) print -rn -- "${R}${t}${N}" ;;
+    -)              print -rn -- "${D}${t}${N}" ;;
+    *)              print -rn -- "${Y}${t}${N}" ;;
+  esac
+}
+print; print -r -- "${B}Summary${N}  ($(elapsed $T_START) total)"
+print -r -- "  ${D}EXEC        PDF         NOTEBOOK${N}"
+n_fail=0
+for nb in "${DONE[@]}"; do
+  print -r -- "  $(fmt ${EXEC_ST[$nb]:--})$(fmt ${PDF_ST[$nb]:--})$nb"
+  [[ ${EXEC_ST[$nb]} == (FAILED|timeout) || ${PDF_ST[$nb]} == FAILED ]] && (( n_fail++ ))
+done
+(( INTERRUPTED )) && print -r -- "  ${Y}interrupted — $(( total - $#DONE )) notebook(s) not processed${N}"
+print
+print -r -- "  logs:     ${RUN_DIR#$PWD/}/logs/"
+(( DO_BACKUP )) && print -r -- "  backups:  ${RUN_DIR#$PWD/}/backup/   (originals before re-run)"
+[[ -d $RUN_DIR/failed ]] && print -r -- "  failed:   ${RUN_DIR#$PWD/}/failed/   (partially executed copies)"
+[[ -f .gitignore ]] && ! command grep -qx '\.nbrerun/\?' .gitignore && \
+  print -r -- "  ${D}tip: add '.nbrerun/' to .gitignore${N}"
+
+if (( INTERRUPTED )); then exit 130; fi
+if (( n_fail )); then print -r -- "${R}${B}$n_fail notebook(s) had errors.${N}"; exit 1; fi
+print -r -- "${G}${B}All done.${N}"
