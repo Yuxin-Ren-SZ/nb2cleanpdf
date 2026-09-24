@@ -18,5 +18,5 @@
 
 ## Checking changes
 - `zsh -n nbrerun` exits 1 after any `! cmd` even with valid syntax — treat "prints nothing" as success.
-- `tests/run-tests.zsh --engine auto|chrome|webpdf|latex|none` — functional suite, work dir `tests/.work/`.
+- `tests/run-tests.zsh --engine auto|chrome|chrome-cli|webpdf|latex|none` — functional suite, work dir `tests/.work/`.
 - CI runs lint + the suite per engine (see `.github/workflows/ci.yml`).

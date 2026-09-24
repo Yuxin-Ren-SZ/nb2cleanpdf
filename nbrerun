@@ -7,7 +7,9 @@
 #
 # Requirements (checked at start-up; missing ones can be installed on the spot):
 #   required : a uv-created venv (./.venv) containing nbformat, nbclient, ipykernel
-#   PDF      : nbconvert + an installed Chrome/Edge/Brave/Chromium ("chrome", default)
+#   PDF      : nbconvert + an installed Chrome/Edge/Brave/Chromium, driven by
+#              playwright in a uv-cached env outside the venv ("chrome", default)
+#              or the same browser's headless print CLI ("chrome-cli")
 #              or nbconvert + playwright's bundled Chromium ("webpdf")
 #              or nbconvert + xelatex + pandoc ("latex")
 #   optional : fzf >= 0.36 for the interactive picker (text menu otherwise)
@@ -28,10 +30,17 @@ else
   R= G= Y= C= B= D= N= EL=$'\n'
   IS_TTY=0
 fi
+if [[ -t 2 ]]; then     # stderr is coloured independently (e.g. `2>err.log`)
+  ER=$'\e[31m' EY=$'\e[33m' ED=$'\e[2m' EN=$'\e[0m'
+else
+  ER= EY= ED= EN=
+fi
 info() { print -r -- "${C}::${N} $*" }
-warn() { print -ru2 -- "${Y}warning:${N} $*" }
-die()  { print -ru2 -- "${R}error:${N} $*"; exit 1 }
-hint() { print -ru2 -- "       ${D}\$${N} $*" }
+warn() { print -ru2 -- "${EY}warning:${EN} $*" }
+die()  { print -ru2 -- "${ER}error:${EN} $*"; exit 1 }
+hint() { print -ru2 -- "       ${ED}\$${EN} $*" }
+# drop ANSI colour codes (e.g. from IPython tracebacks) unless stdout is a terminal
+strip_ansi() { if (( IS_TTY )); then cat; else command sed $'s/\e\\[[0-9;?]*[A-Za-z]//g'; fi }
 
 usage() {
   cat <<EOF
@@ -65,10 +74,14 @@ ${B}PDF export${N}
       --no-pdf            skip PDF export
       --engine ENGINE     auto (default): chrome if a Chromium-based browser is
                           installed, else webpdf
-                          chrome : reuse your installed Chrome/Edge/Brave/Chromium
-                          webpdf : playwright's own Chromium (~/Library/Caches/ms-playwright)
-                          latex  : xelatex + pandoc
-      --browser PATH      browser for the chrome engine (binary or .app bundle;
+                          chrome     : reuse your installed Chrome/Edge/Brave/Chromium,
+                                       driven by playwright (kept in uv's cache, not
+                                       added to your venv)
+                          chrome-cli : same browser via its headless --print-to-pdf
+                                       (no playwright; waits less precisely for MathJax)
+                          webpdf     : playwright's own Chromium (~/Library/Caches/ms-playwright)
+                          latex      : xelatex + pandoc
+      --browser PATH      browser for chrome/chrome-cli (binary or .app bundle;
                           also \$NBRERUN_BROWSER)
   -o, --output-dir DIR    put PDFs in DIR, mirroring the folder layout
                           (default: next to each notebook)
@@ -147,7 +160,8 @@ if [[ $MODE == run ]] && (( KEEP_SET || CLEAN_PDFS )); then
   die "--keep and --pdfs only apply to '$SCRIPT clean'"
 fi
 [[ $TIMEOUT == (-|)<-> ]] || die "--timeout must be an integer (got '$TIMEOUT')"
-[[ $ENGINE == (auto|chrome|webpdf|latex) ]] || die "--engine must be auto, chrome, webpdf or latex (got '$ENGINE')"
+[[ $ENGINE == (auto|chrome|chrome-cli|webpdf|latex) ]] || \
+  die "--engine must be auto, chrome, chrome-cli, webpdf or latex (got '$ENGINE')"
 (( DO_EXEC || DO_PDF )) || die "--no-exec together with --no-pdf leaves nothing to do"
 (( DO_EXEC )) || DO_BACKUP=0
 if [[ -n $PDF_DIR ]]; then PDF_DIR=${PDF_DIR:a}; fi
@@ -366,7 +380,7 @@ fi
 
 # ---------- 1. the uv virtualenv (required) -----------------------------------
 if [[ ! -d $VENV ]]; then
-  print -ru2 -- "${R}error:${N} no virtualenv found at '$VENV_OPT' in $PWD"
+  print -ru2 -- "${ER}error:${EN} no virtualenv found at '$VENV_OPT' in $PWD"
   print -ru2 -- "       This script runs the notebooks with a venv created by uv. Create one with:"
   hint "uv init --bare && uv add --dev jupyter   # new project"
   hint "uv sync                                  # existing pyproject.toml"
@@ -448,7 +462,7 @@ find_browser() {
 browser_label() { [[ $BROWSER == *.app/* ]] && print -r -- ${${BROWSER%%.app/*}:t} || print -r -- $BROWSER }
 
 ENGINE_WAS_AUTO=0
-if (( DO_PDF )) && [[ $ENGINE == (auto|chrome) ]]; then find_browser; fi
+if (( DO_PDF )) && [[ $ENGINE == (auto|chrome|chrome-cli) ]]; then find_browser; fi
 if [[ $ENGINE == auto ]]; then
   ENGINE_WAS_AUTO=1
   if [[ -n $BROWSER ]] || (( ! DO_PDF )); then ENGINE=chrome; else ENGINE=webpdf; fi
@@ -464,6 +478,13 @@ PYEOF
 }
 wants_picker() { (( ! ASSUME_YES )) && [[ -t 0 && -t 1 ]] }
 
+# The chrome engine drives the browser with playwright from an ephemeral env in
+# uv's cache, built on the venv's interpreter: the venv, pyproject.toml and
+# uv.lock stay untouched, and nothing is downloaded after the first time.
+PW_REQ='playwright>=1.49'
+PW_RUN="uv run --no-project --python ${(q)VENV_REL}/bin/python --with ${(qq)PW_REQ}"
+pw_ok() { (( $+commands[uv] )) && eval "$PW_RUN --offline --quiet python -c 'import playwright'" &>/dev/null }
+
 typeset -a DEP_NAME DEP_REQ DEP_AUTO DEP_CMD DEP_WHY DEP_NOTE
 add_dep() {   # name required(0/1) auto-installable(0/1) command why [note]
   DEP_NAME+=("$1"); DEP_REQ+=("$2"); DEP_AUTO+=("$3"); DEP_CMD+=("$4"); DEP_WHY+=("$5"); DEP_NOTE+=("${6:-}")
@@ -471,7 +492,7 @@ add_dep() {   # name required(0/1) auto-installable(0/1) command why [note]
 
 check_deps() {   # $1 = sync | all
   DEP_NAME=() DEP_REQ=() DEP_AUTO=() DEP_CMD=() DEP_WHY=() DEP_NOTE=()
-  local has_brew=$(( ${#BREW} > 0 )) brew_note= need_uv=0 m
+  local has_brew=$(( ${#BREW} > 0 )) brew_note= need_uv=0 m pw=1
   (( has_brew )) || brew_note=$NO_BREW_NOTE
 
   local -a mods=()
@@ -482,9 +503,10 @@ check_deps() {   # $1 = sync | all
     (( DO_PDF ))  && { py_has nbconvert || mods+=nbconvert }
     (( $#mods )) && need_uv=1
     (( DO_PDF )) && [[ $ENGINE == webpdf ]] && ! py_has playwright && need_uv=1
+    (( DO_PDF )) && [[ $ENGINE == chrome ]] && ! pw_ok && { pw=0; need_uv=1 }
   fi
 
-  # uv is the installer for everything that goes into the venv
+  # uv is the installer for everything that goes into the venv (and for playwright)
   local uv_auto=1
   if (( need_uv && ! $+commands[uv] )); then
     add_dep uv 1 $has_brew "brew install uv" "Python package manager used to install into the venv" "$brew_note"
@@ -498,9 +520,12 @@ check_deps() {   # $1 = sync | all
   local no_chrome_note=
   (( ENGINE_WAS_AUTO )) && no_chrome_note="no Chrome/Edge/Brave found to reuse; alternatively: brew install --cask google-chrome"
 
-  if (( DO_PDF )) && [[ $ENGINE == chrome ]]; then
+  if (( DO_PDF )) && [[ $ENGINE == (chrome|chrome-cli) ]]; then
     find_browser || add_dep "Google Chrome" 1 $has_brew "brew install --cask google-chrome" \
         "browser used to print PDFs (or pass --browser PATH)" "$brew_note"
+    (( pw )) || add_dep playwright 1 $uv_auto "$PW_RUN python -c 'import playwright'" \
+        "drives the browser to print PDFs" \
+        "~300 MB in uv's cache (shared, outside your venv); pyproject.toml / uv.lock are not changed"
   elif (( DO_PDF )) && [[ $ENGINE == webpdf ]]; then
     if ! py_has playwright; then
       add_dep "nbconvert[webpdf]" 1 $uv_auto "$UV_ADD 'nbconvert[webpdf]'" \
@@ -573,7 +598,7 @@ ensure_deps() {   # $1 = sync | all
     todo=()
     for k in {1..$#DEP_NAME}; do (( DEP_AUTO[k] )) && todo+=$k; done
     if (( ! $#todo )); then
-      print -ru2 -- "${R}error:${N} none of these can be installed automatically — run the commands above yourself, then re-run."
+      print -ru2 -- "${ER}error:${EN} none of these can be installed automatically — run the commands above yourself, then re-run."
       exit 1
     fi
 
@@ -587,14 +612,14 @@ ensure_deps() {   # $1 = sync | all
         exit 1
       fi
     else
-      print -ru2 -- "${R}error:${N} missing dependencies and no TTY to ask — run the commands above, or re-run with --install-deps"
+      print -ru2 -- "${ER}error:${EN} missing dependencies and no TTY to ask — run the commands above, or re-run with --install-deps"
       exit 1
     fi
 
     for k in $todo; do
       print -r -- "${C}::${N} ${B}$DEP_NAME[k]${N}: ${D}$DEP_CMD[k]${N}"
       if ! eval "$DEP_CMD[k]"; then
-        print -ru2 -- "${R}error:${N} installing '$DEP_NAME[k]' failed (command above). Fix it and re-run."
+        print -ru2 -- "${ER}error:${EN} installing '$DEP_NAME[k]' failed (command above). Fix it and re-run."
         exit 1
       fi
       rehash
@@ -613,7 +638,8 @@ if (( ! DRY_RUN )); then
   ensure_deps all
   if (( DO_PDF )); then
     case $ENGINE in
-      chrome) info "PDF engine: ${B}chrome${N} — reusing $(browser_label)" ;;
+      chrome)     info "PDF engine: ${B}chrome${N} — reusing $(browser_label) via playwright" ;;
+      chrome-cli) info "PDF engine: ${B}chrome-cli${N} — reusing $(browser_label) (headless print)" ;;
       webpdf) info "PDF engine: ${B}webpdf${N} — playwright's Chromium" ;;
       latex)  info "PDF engine: ${B}latex${N} — xelatex" ;;
     esac
@@ -673,6 +699,35 @@ for c in cells[:8]:
 PYEOF
 
 if (( DO_PDF )) && [[ $ENGINE == chrome ]]; then
+  cat >$TMP/pw_pdf.py <<'PYEOF'
+# Print an nbconvert HTML file to PDF by driving an installed Chrome-family
+# browser with playwright (temporary profile; the real one is never touched).
+import pathlib, sys
+from playwright.sync_api import Error, sync_playwright
+browser, html, pdf, timeout = sys.argv[1:5]
+# MathJax 2 typesets asynchronously: wait until its queue has drained
+MATHJAX_DONE = """() => new Promise(done => {
+  if (!window.MathJax || !MathJax.Hub || !MathJax.Hub.Queue) return done(false);
+  MathJax.Hub.Queue(() => done(true));
+})"""
+try:
+    with sync_playwright() as p:
+        b = p.chromium.launch(executable_path=browser)
+        try:
+            page = b.new_page()
+            page.set_default_timeout(float(timeout) * 1000)
+            page.emulate_media(media="print")
+            page.goto(pathlib.Path(html).resolve().as_uri(), wait_until="networkidle")
+            page.evaluate(MATHJAX_DONE)
+            page.pdf(path=pdf, print_background=True)   # no header/footer by default
+        finally:
+            b.close()
+except Error as e:
+    print(f"playwright: {e.message.strip()}", file=sys.stderr); sys.exit(1)
+PYEOF
+fi
+
+if (( DO_PDF )) && [[ $ENGINE == chrome-cli ]]; then
   cat >$TMP/chrome_pdf.py <<'PYEOF'
 # Print an nbconvert HTML file to PDF with an existing Chrome-family browser.
 import os, pathlib, signal, subprocess, sys, time
@@ -751,7 +806,7 @@ PYEOF
   unset MPLBACKEND PYTHONSTARTUP
 
   cat >$TMP/exec.py <<'PYEOF'
-import os, shutil, sys, time, traceback
+import os, re, shutil, sys, threading, time, traceback
 import nbformat
 from nbclient import NotebookClient
 from nbclient.exceptions import CellExecutionError, CellTimeoutError, DeadKernelError
@@ -760,10 +815,12 @@ src, kernel, timeout, allow_errors, failed_copy, progress, errfile = sys.argv[1:
 timeout = None if int(timeout) <= 0 else int(timeout)
 t0 = time.time()
 
+ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
 def err(msg):
-    print(msg, file=sys.stderr)                       # full log
+    print(ANSI.sub("", msg), file=sys.stderr)         # full log, plain text
     with open(errfile, "a", encoding="utf-8") as fh:  # short summary shown on screen
-        fh.write(msg + "\n")
+        fh.write(msg + "\n")                          # (the shell strips colours off-terminal)
 
 def tty(msg):
     if progress == "1":
@@ -790,8 +847,24 @@ client = NotebookClient(
     record_timing=False,
     resources={"metadata": {"path": os.path.dirname(os.path.abspath(src))}},  # cwd = notebook dir
 )
-client.on_cell_start = lambda cell, cell_index: tty(
-    f"\r\033[K  \033[2m▶ executing… cell {cell_index + 1}/{n}  ({time.time() - t0:.0f}s)\033[0m")
+
+# progress line: redrawn on every cell start and once a second, so the clock
+# keeps running through kernel start-up and long cells
+status = "starting kernel…"
+def draw():
+    tty(f"\r\033[K  \033[2m▶ {status}  ({time.time() - t0:.0f}s)\033[0m")
+def on_cell_start(cell, cell_index):
+    global status
+    status = f"executing… cell {cell_index + 1}/{n}"
+    draw()
+client.on_cell_start = on_cell_start
+ticking = threading.Event()
+def tick():
+    while not ticking.wait(1.0):
+        draw()
+if progress == "1":
+    draw()
+    threading.Thread(target=tick, daemon=True).start()
 
 rc = 0
 try:
@@ -804,6 +877,7 @@ except DeadKernelError as e:
     err(f"kernel died: {e}"); rc = 5
 except Exception:
     err(traceback.format_exc().strip()); rc = 2
+ticking.set()
 
 # don't leak the temporary kernel name into the saved notebook
 if ks is not None: nb.metadata["kernelspec"] = ks
@@ -890,17 +964,23 @@ export_pdf() {   # $1 notebook, $2 log, $3 index -> writes PDF, returns status
   mkdir -p $out
   local -a args=( --output-dir $out --output out )
   case $ENGINE in
-    chrome) args+=( --to html --template webpdf --embed-images ) ;;
-    webpdf) args+=( --to webpdf --embed-images ) ;;
-    latex)  args+=( --to pdf ) ;;
+    chrome|chrome-cli) args+=( --to html --template webpdf --embed-images ) ;;
+    webpdf)            args+=( --to webpdf --embed-images ) ;;
+    latex)             args+=( --to pdf ) ;;
   esac
   print -r -- "---- nbconvert ($ENGINE) $(strftime '%F %T' $EPOCHSECONDS)" >>$log
   ( cd -- ${nb:h} && "$PY" -m nbconvert "${args[@]}" "./${nb:t}" ) >>$log 2>&1 || return 1
-  if [[ $ENGINE == chrome ]]; then
+  if [[ $ENGINE == chrome* ]]; then
     local -a htmls=( $out/*.html(N) )
     (( $#htmls == 1 )) || { print -r -- "nbconvert produced no HTML" >>$log; return 1 }
-    print -r -- "---- $BROWSER --print-to-pdf" >>$log
-    "$PY" $TMP/chrome_pdf.py "$BROWSER" $htmls[1] $out/out.pdf $TMP/chrome-profile $PDF_TIMEOUT >>$log 2>&1 || return 1
+    if [[ $ENGINE == chrome ]]; then
+      print -r -- "---- playwright → $BROWSER" >>$log
+      uv run --offline --quiet --no-project --python "$PY" --with "$PW_REQ" \
+          python $TMP/pw_pdf.py "$BROWSER" $htmls[1] $out/out.pdf $PDF_TIMEOUT >>$log 2>&1 || return 1
+    else
+      print -r -- "---- $BROWSER --print-to-pdf" >>$log
+      "$PY" $TMP/chrome_pdf.py "$BROWSER" $htmls[1] $out/out.pdf $TMP/chrome-profile $PDF_TIMEOUT >>$log 2>&1 || return 1
+    fi
   fi
   local -a produced=( $out/*.pdf(N) )
   (( $#produced == 1 )) || { print -r -- "nbconvert produced no PDF" >>$log; return 1 }
@@ -908,10 +988,10 @@ export_pdf() {   # $1 notebook, $2 log, $3 index -> writes PDF, returns status
   REPLY=${dest#$PWD/}
 }
 
-show_tail() { tail -n ${2:-15} -- $1 | cut -c1-220 | sed 's/^/    │ /'; true }
+show_tail() { tail -n ${2:-15} -- $1 | strip_ansi | cut -c1-220 | sed 's/^/    │ /'; true }
 show_pdf_error() {   # LaTeX errors ("! ...") are buried in a huge transcript; surface them
   local -a errs=( ${(f)"$(command grep -oE '! [^\\]{3,200}' -- $1 | command grep -v '^! Emergency stop' | awk '!seen[$0]++' | head -n 5)"} )
-  if (( $#errs )); then print -rl -- "${errs[@]/#/    │ }"; else show_tail $1 12; fi
+  if (( $#errs )); then print -rl -- "${errs[@]/#/    │ }" | strip_ansi; else show_tail $1 12; fi
 }
 
 total=$#NBS

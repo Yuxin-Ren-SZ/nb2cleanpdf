@@ -42,7 +42,8 @@ matches the whole relative path; a glob without `/` matches the file name.
 | `--engine` | how | needs |
 |---|---|---|
 | `auto` (default) | `chrome` if a Chromium-based browser is installed, else `webpdf` | |
-| `chrome` | nbconvert HTML, printed by your installed browser | Chrome / Edge / Brave / Chromium |
+| `chrome` | nbconvert HTML, printed by your installed browser driven by playwright | Chrome / Edge / Brave / Chromium; playwright is fetched once into uv's cache (~300 MB), never added to your venv |
+| `chrome-cli` | same, via the browser's own `--headless --print-to-pdf` | the browser only |
 | `webpdf` | nbconvert + playwright's own Chromium | `nbconvert[webpdf]`, ~150 MB download (shared cache) |
 | `latex` | nbconvert + xelatex (no CJK support) | pandoc, a TeX distribution |
 
@@ -51,11 +52,11 @@ Formulas are rendered with MathJax from a CDN, so PDF export needs network acces
 ## Development
 
 ```zsh
-tests/run-tests.zsh --engine auto    # builds a scratch project in tests/.work/ and runs ~45 checks
+tests/run-tests.zsh --engine auto    # builds a scratch project in tests/.work/ and runs ~50 checks
 tests/run-tests.zsh --engine none    # skip PDF export (fast)
 ```
 
 CI (`.github/workflows/ci.yml`) runs the suite for every engine on Linux and the
-default engine on macOS; PDFs and logs are uploaded as build artifacts.
+browser engines on macOS; PDFs and logs are uploaded as build artifacts.
 
 Design decisions and their reasons: [docs/DESIGN.md](docs/DESIGN.md).

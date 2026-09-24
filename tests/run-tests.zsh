@@ -5,7 +5,7 @@
 #
 #   tests/run-tests.zsh [--engine ENGINE]
 #
-# ENGINE is passed to `nbrerun --engine` (auto, chrome, webpdf, latex), or
+# ENGINE is passed to `nbrerun --engine` (auto, chrome, chrome-cli, webpdf, latex), or
 # `none` to skip PDF export entirely. Missing PDF dependencies are installed
 # with --install-deps. The work dir is kept afterwards (logs, PDFs) and wiped
 # at the start of the next run.
@@ -39,6 +39,15 @@ die()     { print -ru2 -- "setup failed: $*"; exit 2 }
 
 # run nbrerun without a TTY; output -> $OUT, status -> $RC
 nbr() { OUT=$("$NBRERUN" "$@" </dev/null 2>&1); RC=$? }
+# same, but on a pseudo-terminal (BSD and util-linux `script` differ)
+nbr_tty() {
+  if [[ $OSTYPE == darwin* ]]; then
+    OUT=$(script -q /dev/null "$NBRERUN" "$@" </dev/null 2>&1)
+  else
+    OUT=$(script -qec "${(j: :)${(q)@}}" /dev/null </dev/null 2>&1)
+  fi
+  RC=$?
+}
 
 # check DESCRIPTION EXPR — EXPR is eval'ed; on failure the last output is shown
 check() {
@@ -132,6 +141,8 @@ if [[ $ENGINE != none ]]; then
   check "PDF embeds the plot"                '(( $(pdf_images "analysis/fig 1.v2.pdf") >= 1 ))'
   [[ $ENGINE != latex ]] && \
   check "PDF shows CJK text"                 '[[ $(pdf_text unicode/cjk.pdf) == *中* ]]'
+  [[ $ENGINE == (auto|chrome) ]] && \
+  check "playwright kept out of the venv"    '! py -c "import playwright" 2>/dev/null && ! command grep -q playwright pyproject.toml uv.lock'
 
   nbr -y --no-exec -i eda -o out $PDFARGS
   check "-o mirrors the folder layout"       '(( RC == 0 )) && is_pdf out/analysis/sub/eda.pdf'
@@ -148,6 +159,12 @@ check "originals untouched on failure"       'cmp -s scratch/broken.ipynb $WORK/
 check "partial copies saved"                 '(( $(count .nbrerun/*/failed/*.ipynb(N)) >= 2 ))'
 [[ $ENGINE != none ]] && \
 check "PDF skipped after failed execution"   'has "PDF skipped"'
+check "no colour codes when redirected"      '[[ $OUT != *$'"'\e'"'* ]]'
+check "logs are plain text"                  '! command grep -q $'"'\e'"' .nbrerun/*/logs/*.log'
+
+nbr_tty -y -t 3 -i slow --no-pdf
+check "colours kept on a terminal"           '[[ $OUT == *$'"'\e[31m'"'* ]]'
+check "progress clock ticks during a cell"   'has "(2s)"'
 
 nbr -y --allow-errors -i broken --no-pdf
 check "--allow-errors runs to the end"       '(( RC == 0 )) && [[ $(outputs scratch/broken.ipynb) == *never-reached* ]]'

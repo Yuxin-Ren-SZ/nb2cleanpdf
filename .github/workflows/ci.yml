@@ -38,6 +38,8 @@ jobs:
         include:
           - { os: macos-latest,  engine: chrome }
           - { os: ubuntu-latest, engine: chrome }
+          - { os: macos-latest,  engine: chrome-cli }
+          - { os: ubuntu-latest, engine: chrome-cli }
           - { os: ubuntu-latest, engine: webpdf }
           - { os: ubuntu-latest, engine: latex }
           - { os: ubuntu-latest, engine: none }
@@ -57,7 +59,7 @@ jobs:
           texlive-plain-generic texlive-luatex lmodern
 
       - name: browser in use
-        if: matrix.engine == 'chrome'
+        if: startsWith(matrix.engine, 'chrome')
         run: |
           if [ "$RUNNER_OS" = macOS ]; then
             "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --version

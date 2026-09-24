@@ -25,7 +25,8 @@ formulas and relative paths.
 5. uv venv validation.
 6. Dependency registry, check → report → prompt → install loop, engine resolution, `--sync`.
 7. Discover + filter, dry-run exit.
-8. `$TMP` workspace, traps, embedded Python helpers (`preview.py`, `exec.py`, `chrome_pdf.py`).
+8. `$TMP` workspace, traps, embedded Python helpers (`preview.py`, `exec.py`, `pw_pdf.py`,
+   `chrome_pdf.py`).
 9. Interactive (un)selection.
 10. Run loop.
 11. Summary.
@@ -80,7 +81,17 @@ formulas and relative paths.
 ## PDF engines
 
 - **chrome** (default via `auto`): `nbconvert --to html --template webpdf --embed-images`, then
-  `chrome_pdf.py` prints with the installed browser: `--headless=new --print-to-pdf`, a temporary
+  `pw_pdf.py` drives the installed browser with playwright (`launch(executable_path=…)`):
+  `goto(wait_until="networkidle")`, then waits for MathJax's queue to drain, then
+  `page.pdf(print_background=True)` (no header/footer by default), then `browser.close()`.
+  - Why playwright: exact "page is ready" signal instead of a time budget, and a clean browser
+    shutdown via CDP (the CLI printing hangs on Chrome 153, see below). Temporary profile, as always.
+  - playwright is **not** installed into the venv: it runs from an ephemeral env in uv's cache
+    (`uv run --no-project --python .venv/bin/python --with 'playwright>=1.49'`), so the project's
+    venv, `pyproject.toml` and `uv.lock` stay untouched. The dependency check runs the same
+    command with `--offline`; the export itself also runs `--offline` (no network round-trip).
+- **chrome-cli**: same HTML, printed by `chrome_pdf.py` via the browser's own
+  `--headless=new --print-to-pdf`, a temporary
   `--user-data-dir` (never the real profile; works while Chrome is open), no header/footer,
   `--virtual-time-budget=20000` for MathJax, injected `print-color-adjust: exact`.
   - **Chrome may never exit after printing** (seen with Chrome 153 on macOS 27: the PDF is
@@ -90,7 +101,7 @@ formulas and relative paths.
     `start_new_session`), also on timeout and Ctrl-C.
   - nbconvert's `WebPDFExporter` can't be pointed at an installed browser (no channel/executable
     option), hence the separate step.
-- Browser discovery: Chrome, Chromium, Edge, Brave, Chrome Beta, Canary in `/Applications`, then
+- Browser discovery (chrome and chrome-cli): Chrome, Chromium, Edge, Brave, Chrome Beta, Canary in `/Applications`, then
   `~/Applications`, then PATH names (Linux). `--browser` takes a binary or `.app`.
 - **webpdf**: playwright's own Chromium in the shared cache `~/Library/Caches/ms-playwright`.
 - **latex**: fails on CJK with the default template.
@@ -107,7 +118,12 @@ formulas and relative paths.
 - Ctrl-C: `trap 'INTERRUPTED=1' INT`; the foreground helper gets SIGINT, the notebook stays
   untouched, the summary is printed, exit 130.
 - No spinners/background jobs (a non-interactive shell's background jobs ignore SIGINT).
-  Progress is written by `exec.py` to fd 3 and redrawn with `\r\e[K`.
+  Progress is written by `exec.py` to fd 3 and redrawn with `\r\e[K`: on every cell start and
+  once a second from a daemon thread, so the clock keeps running through kernel start-up and
+  long cells.
+- Colours: stdout and stderr are coloured only when they are terminals (checked separately).
+  Tracebacks from IPython carry their own ANSI codes: the on-screen error summary keeps them on a
+  terminal and strips them otherwise; logs are always written as plain text.
 
 ## `nbrerun clean`
 
@@ -129,3 +145,5 @@ Trash when a `trash` command exists (macOS 15+: `/usr/bin/trash`), otherwise del
   and timeouts, dependency install (`y`, `n`, `--install-deps`, no TTY), `clean` after
   `kill -9` (BSD `ps`, `/usr/bin/trash`), Ctrl-C and the fzf picker (by the user).
 - Not verified on the Mac: webpdf and latex engines (covered by CI on Linux).
+- 2026-09-23: chrome engine switched to playwright; verified on the Mac (Chrome exits cleanly,
+  ~3 s per PDF), plus the missing-playwright install flow with an empty uv cache.
