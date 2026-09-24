@@ -24,6 +24,10 @@ jobs:
             out=$(zsh -n "$f" 2>&1 || true)
             if [ -n "$out" ]; then echo "$f: $out"; exit 1; fi
           done
+      - name: install.sh (POSIX sh)
+        run: |
+          sh -n install.sh
+          shellcheck -s sh install.sh
       - name: python syntax
         run: python3 -m py_compile tests/make_fixture.py
 
