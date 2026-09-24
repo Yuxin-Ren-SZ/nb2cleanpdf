@@ -5,6 +5,7 @@
 ![shell: zsh](https://img.shields.io/badge/shell-zsh-4EAA25)
 [![venv: uv](https://img.shields.io/badge/venv-uv-DE5FE9?logo=uv&logoColor=white)](https://docs.astral.sh/uv/)
 ![Jupyter notebooks](https://img.shields.io/badge/Jupyter-notebooks-F37626?logo=jupyter&logoColor=white)
+[![license: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![last commit](https://img.shields.io/github/last-commit/Yuxin-Ren-SZ/nb2cleanpdf)](https://github.com/Yuxin-Ren-SZ/nb2cleanpdf/commits/main)
 
 **English** | [简体中文](README.zh-CN.md)
@@ -89,3 +90,7 @@ CI (`.github/workflows/ci.yml`) runs the suite for every engine on Linux and the
 browser engines on macOS; PDFs and logs are uploaded as build artifacts.
 
 Design decisions and their reasons: [docs/DESIGN.md](docs/DESIGN.md).
+
+## License
+
+[MIT](LICENSE) © 2026 Yuxin Ren
