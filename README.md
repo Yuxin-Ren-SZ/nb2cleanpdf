@@ -1,22 +1,22 @@
-# nbrerun
+# nb2cleanpdf
 
-Cleanly re-run every Jupyter notebook below the current directory with the
-project's **uv** virtualenv, then export each one to **PDF**.
+Export **clean PDFs** of Jupyter notebooks: every notebook in a project is re-run
+from scratch with the project's **uv** virtualenv, then exported to PDF (into `PDF/`).
 
 - finds all `.ipynb` files (skips hidden dirs, `.venv`, `node_modules`, checkpoints)
 - lets you unselect notebooks (fzf picker, or a numbered menu) and filter with `-i` / `-e` patterns
 - runs each notebook in a fresh kernel from `./.venv`, with outputs cleared first and cwd set to the notebook's folder
-- only overwrites a notebook when it ran without errors (atomic replace, backup kept in `.nbrerun/`)
-- exports PDFs by reusing the Chrome/Edge/Brave you already have installed (no browser download)
+- only overwrites a notebook when it ran without errors (atomic replace, backup kept in `.nb2cleanpdf/`)
+- exports PDFs into `PDF/` (mirroring the folder layout) by reusing the Chrome/Edge/Brave you already have installed
 - checks every dependency at start-up and offers to install what's missing
-- `nbrerun clean` removes run records and whatever a killed run left behind
+- `nb2cleanpdf clean` removes run records and whatever a killed run left behind
 
 It's a single self-contained zsh script for macOS (Linux works too).
 
 ## Install
 
 ```zsh
-cp nbrerun ~/.local/bin/        # or anywhere on your PATH
+cp nb2cleanpdf ~/.local/bin/        # or anywhere on your PATH
 ```
 
 Requirements: zsh, [uv](https://docs.astral.sh/uv/), and a uv-created `.venv` in the
@@ -27,12 +27,18 @@ installs it.
 
 ```zsh
 cd my-research-project
-nbrerun                          # pick notebooks, re-run them, export PDFs
-nbrerun -n                       # just list what would be processed
-nbrerun -i 'analysis/*' -e '(#i)*draft*' -o pdf -t 900
-nbrerun clean -n                 # show leftovers; `nbrerun clean` removes them
-nbrerun -h                       # all options
+nb2cleanpdf                          # pick notebooks, re-run them, export PDFs to ./PDF/
+nb2cleanpdf ~/research/other-proj    # same for another project, from anywhere
+nb2cleanpdf -n                       # just list what would be processed
+nb2cleanpdf -i 'analysis/*' -e '(#i)*draft*' -o ~/Desktop/pdfs -t 900
+nb2cleanpdf -o .                     # PDFs next to each notebook instead of PDF/
+nb2cleanpdf clean -n                 # show leftovers; `nb2cleanpdf clean` removes them
+nb2cleanpdf -h                       # all options
 ```
+
+The project directory (default: the current one) holds `.venv`, the notebooks, `PDF/`
+and the run records in `.nb2cleanpdf/`. Paths given in options (`-o`, `--venv`,
+`--browser`) are relative to where you run the command.
 
 Always quote patterns. A plain word matches anywhere in the path; a glob with `/`
 matches the whole relative path; a glob without `/` matches the file name.

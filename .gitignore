@@ -3,9 +3,9 @@
 __pycache__/
 *.py[cod]
 
-# nbrerun run records and leftovers (also created by the test suite)
-.nbrerun/
-.*.ipynb.nbrerun-tmp
+# nb2cleanpdf run records and leftovers (also created by the test suite)
+.nb2cleanpdf/
+.*.ipynb.nb2cleanpdf-tmp
 .ipynb_checkpoints/
 
 # test suite scratch space and artifacts

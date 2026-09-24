@@ -20,7 +20,7 @@ jobs:
       # so a clean parse is "nothing printed", not the exit status.
       - name: zsh syntax
         run: |
-          for f in nbrerun tests/run-tests.zsh; do
+          for f in nb2cleanpdf tests/run-tests.zsh; do
             out=$(zsh -n "$f" 2>&1 || true)
             if [ -n "$out" ]; then echo "$f: $out"; exit 1; fi
           done
@@ -79,7 +79,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: nbrerun-${{ matrix.engine }}-${{ matrix.os }}
+          name: nb2cleanpdf-${{ matrix.engine }}-${{ matrix.os }}
           include-hidden-files: true
           if-no-files-found: ignore
           path: |
