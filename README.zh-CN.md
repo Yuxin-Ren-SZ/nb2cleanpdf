@@ -5,6 +5,7 @@
 ![shell: zsh](https://img.shields.io/badge/shell-zsh-4EAA25)
 [![venv: uv](https://img.shields.io/badge/venv-uv-DE5FE9?logo=uv&logoColor=white)](https://docs.astral.sh/uv/)
 ![Jupyter notebooks](https://img.shields.io/badge/Jupyter-notebooks-F37626?logo=jupyter&logoColor=white)
+[![license: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![last commit](https://img.shields.io/github/last-commit/Yuxin-Ren-SZ/nb2cleanpdf)](https://github.com/Yuxin-Ren-SZ/nb2cleanpdf/commits/main)
 
 [English](README.md) | **简体中文**
@@ -87,3 +88,7 @@ CI（`.github/workflows/ci.yml`）在 Linux 上对每种引擎运行测试，在
 生成的 PDF 和日志会作为构建产物上传。
 
 设计决策及其原因见 [docs/DESIGN.md](docs/DESIGN.md)（英文）。
+
+## 许可证
+
+[MIT](LICENSE) © 2026 Yuxin Ren
