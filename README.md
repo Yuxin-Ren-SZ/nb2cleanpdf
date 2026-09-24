@@ -30,6 +30,13 @@ Windows is not supported natively — WSL may work but is untested.
 curl -fsSL https://raw.githubusercontent.com/Yuxin-Ren-SZ/nb2cleanpdf/main/install.sh | sh
 ```
 
+This installs the latest code from `main`. To pin a
+[release](https://github.com/Yuxin-Ren-SZ/nb2cleanpdf/releases), add `--version`:
+
+```zsh
+curl -fsSL https://raw.githubusercontent.com/Yuxin-Ren-SZ/nb2cleanpdf/main/install.sh | sh -s -- --version 0.2.0
+```
+
 or from a clone:
 
 ```zsh
@@ -58,6 +65,7 @@ nb2cleanpdf -i 'analysis/*' -e '(#i)*draft*' -o ~/Desktop/pdfs -t 900
 nb2cleanpdf -o .                     # PDFs next to each notebook instead of PDF/
 nb2cleanpdf clean -n                 # show leftovers; `nb2cleanpdf clean` removes them
 nb2cleanpdf -h                       # all options
+nb2cleanpdf -V                       # installed version
 ```
 
 The project directory (default: the current one) holds `.venv`, the notebooks, `PDF/`

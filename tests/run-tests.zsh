@@ -150,6 +150,20 @@ OUT=$(NB2CLEANPDF_URL=file://$NB2CLEANPDF sh -s -- --bin-dir $I/remote <$INST 2>
 check "piped install downloads the script"   '(( RC == 0 )) && has "downloading" && cmp -s $I/remote/nb2cleanpdf $NB2CLEANPDF'
 OUT=$(NB2CLEANPDF_URL=file://$INST sh -s -- --bin-dir $I/remote2 <$INST 2>&1); RC=$?
 check "rejects a download that isn't it"     '(( RC == 1 )) && [[ ! -e $I/remote2/nb2cleanpdf ]]'
+inst $INST --bin-dir $I/v --version 1.x
+check "--version rejects a malformed version" '(( RC == 1 )) && has "must look like" && [[ ! -e $I/v ]]'
+inst $INST --bin-dir $I/v --version 0.1.0 --link
+check "--version with --link rejected"       '(( RC == 1 )) && [[ ! -e $I/v ]]'
+OUT=$(NB2CLEANPDF_URL=file://$NB2CLEANPDF sh $INST --bin-dir $I/v --version 0.1.0 </dev/null 2>&1); RC=$?
+check "--version with NB2CLEANPDF_URL rejected" '(( RC == 1 )) && [[ ! -e $I/v ]]'
+inst $INST --bin-dir $I/v --version v0.1.0     # needs network (GitHub)
+check "--version downloads the release tag"  '(( RC == 0 )) && has "/v0.1.0/nb2cleanpdf" && [[ -x $I/v/nb2cleanpdf ]]'
+inst $INST --bin-dir $I/v --version 0.0.0
+check "--version of a missing release fails" '(( RC == 1 )) && has "a release?"'
+inst $INST --bin-dir $I/v
+check "reports the installed version"        "(( RC == 0 )) && has \"version \$(\$NB2CLEANPDF -V | cut -d' ' -f2)\""
+OUT=$($NB2CLEANPDF --version 2>&1); RC=$?
+check "--version prints the version"         '(( RC == 0 )) && [[ $OUT == "nb2cleanpdf "<->.<->.<-> ]]'
 
 # ---------- venv validation ------------------------------------------------------
 section "venv validation"
