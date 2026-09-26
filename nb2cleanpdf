@@ -1146,6 +1146,7 @@ PYEOF
 
   cat >$TMP/exec.py <<'PYEOF'
 import os, re, shutil, sys, threading, time, traceback
+from queue import Empty
 import nbformat
 from nbclient import NotebookClient
 from nbclient.exceptions import CellExecutionError, CellTimeoutError, DeadKernelError
@@ -1180,8 +1181,28 @@ for cell in nb.cells:
         cell.execution_count = None
         cell.metadata.pop("execution", None)
 
+class Client(NotebookClient):
+    # nbclient mimics the ipywidgets Output widget (used by interact/interactive)
+    # and sends comm messages on the shell socket while another task awaits the
+    # execute_reply on that same socket. zmq's edge-triggered fd can then miss
+    # the reply's wake-up: the wait only ends at the cell timeout — never, with
+    # no timeout. Waiting in short slices re-checks the socket every second.
+    async def async_start_new_kernel_client(self):
+        kc = await super().async_start_new_kernel_client()
+        get_msg = kc.shell_channel.get_msg
+        async def sliced_get_msg(timeout=None):
+            end = None if timeout is None else time.monotonic() + timeout
+            while True:
+                step = 1.0 if end is None else max(0.0, min(1.0, end - time.monotonic()))
+                try:
+                    return await get_msg(timeout=step)
+                except Empty:
+                    if end is not None and time.monotonic() >= end: raise
+        kc.shell_channel.get_msg = sliced_get_msg
+        return kc
+
 n = len(nb.cells)
-client = NotebookClient(
+client = Client(
     nb, kernel_name=kernel, timeout=timeout, allow_errors=(allow_errors == "1"),
     record_timing=False,
     resources={"metadata": {"path": os.path.dirname(os.path.abspath(src))}},  # cwd = notebook dir

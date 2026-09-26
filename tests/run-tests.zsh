@@ -12,6 +12,7 @@
 # ---------------------------------------------------------------------------
 emulate -R zsh
 setopt extended_glob pipe_fail
+zmodload zsh/datetime
 
 ROOT=${0:A:h:h}
 NB2CLEANPDF=$ROOT/nb2cleanpdf
@@ -311,6 +312,22 @@ check "kernel runs the venv interpreter"     'has_line intro.ipynb "EXE=$P/.venv
 check "original kernelspec restored"         '[[ $(kernel_name intro.ipynb) == python3 ]]'
 check "backups written"                      '(( $(count .nb2cleanpdf/*/backup/intro.ipynb(N)) == 1 && $(count .nb2cleanpdf/*/backup/analysis/fig\ 1.v2.ipynb(N)) == 1 ))'
 check "no temp files left"                   '(( $(count **/.*.nb2cleanpdf-tmp(N)) == 0 ))'
+
+# ipywidgets' interactive() writes into an Output widget; nbclient's mimic of it
+# used to make the execute_reply wait until the cell timeout (forever by default)
+mkdir -p interact
+py - interact/i.ipynb <<'EOF'
+import sys, nbformat as nbf
+nb = nbf.v4.new_notebook()
+nb.metadata["kernelspec"] = {"name": "python3", "display_name": "Python 3", "language": "python"}
+nb.cells = [nbf.v4.new_code_cell("from ipywidgets import interactive\ndef f(a=1): print('value', a)\ninteractive(f, a=(0, 5))"),
+            nbf.v4.new_code_cell("print('after-interactive')")]
+nbf.write(nb, sys.argv[1])
+EOF
+T0=$EPOCHREALTIME
+nbr -y -i interact --no-pdf -t 60
+check "interactive() cell doesn't wait for the timeout" '(( RC == 0 && EPOCHREALTIME - T0 < 30 )) && [[ $(outputs interact/i.ipynb) == *after-interactive* ]]'
+rm -rf interact
 
 if [[ $ENGINE != none ]]; then
   check "PDFs go to PDF/, mirroring folders" 'is_pdf PDF/intro.pdf && is_pdf "PDF/analysis/fig 1.v2.pdf" && is_pdf PDF/analysis/sub/eda.pdf'

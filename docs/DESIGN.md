@@ -93,6 +93,13 @@ formulas and relative paths.
   `MPLBACKEND` (macosx would open windows) and `PYTHONSTARTUP` unset; warning if `PYTHONPATH`
   is set; `JUPYTER_PLATFORM_DIRS=1`, `PYDEVD_DISABLE_FILE_VALIDATION=1`.
 - Non-Python kernels are skipped (rc 3).
+- **Shell replies are awaited in 1 s slices** (`Client` subclass in `exec.py`). nbclient mimics
+  the ipywidgets Output widget (what `interact`/`interactive` render into) and, on
+  `clear_output`, sends a `comm_msg` on the shell socket while another task awaits the
+  `execute_reply` on that same socket; zmq's edge-triggered fd then misses the wake-up and the
+  wait only ends at the cell timeout — never, with the default no-timeout. The kernel itself
+  replies at once (checked with a plain `jupyter_client`). Seen with nbclient 0.11,
+  jupyter_client 8.10, pyzmq 27.2, ipykernel 7.3. Slicing keeps the overall timeout semantics.
 
 ## Safety of user files
 
