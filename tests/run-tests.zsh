@@ -324,6 +324,33 @@ if [[ $ENGINE != none ]]; then
   [[ $ENGINE == (auto|chrome) ]] && \
   check "playwright kept out of the venv"    '! py -c "import playwright" 2>/dev/null && ! command grep -q playwright pyproject.toml uv.lock'
 
+  if [[ $ENGINE == (auto|chrome|chrome-cli) ]]; then
+    # ipywidgets: the HTML loads the widget renderer from a CDN. Point it at a
+    # socket that accepts but never answers — a blocked/stalled CDN must not hang.
+    mkdir -p widgets
+    py - widgets/w.ipynb <<'EOF'
+import sys, nbformat as nbf
+nb = nbf.v4.new_notebook()
+nb.metadata["kernelspec"] = {"name": "python3", "display_name": "Python 3", "language": "python"}
+nb.cells = [nbf.v4.new_code_cell("import ipywidgets as w\nw.IntSlider(value=3)"),
+            nbf.v4.new_code_cell("print('after-widget')")]
+nbf.write(nb, sys.argv[1])
+EOF
+    py -c 'import socket, sys, time
+s = socket.socket(); s.bind(("127.0.0.1", 0)); s.listen(8)
+print(s.getsockname()[1], flush=True); sys.stdout.close(); time.sleep(600)' >$WORK/stall.port &
+    STALL_PID=$!
+    while [[ ! -s $WORK/stall.port ]]; do sleep 0.1; done
+    mkdir -p $WORK/jcfg
+    print -r -- "{\"HTMLExporter\": {\"jupyter_widgets_base_url\": \"http://127.0.0.1:$(<$WORK/stall.port)/\"}}" \
+      >$WORK/jcfg/jupyter_nbconvert_config.json
+    OUT=$(JUPYTER_CONFIG_DIR=$WORK/jcfg "$NB2CLEANPDF" -y -i widgets $PDFARGS </dev/null 2>&1); RC=$?
+    kill $STALL_PID 2>/dev/null
+    check "stalled widget CDN doesn't hang export" '(( RC == 0 )) && [[ $(pdf_text PDF/widgets/w.pdf) == *after-widget* ]]'
+    check "stalled CDN reported"               'has "did not load"'
+    rm -rf widgets PDF/widgets
+  fi
+
   nbr -y --no-exec -i eda -o out $PDFARGS
   check "-o mirrors the folder layout"       '(( RC == 0 )) && is_pdf out/analysis/sub/eda.pdf'
   nbr -y --no-exec -i eda -o . $PDFARGS

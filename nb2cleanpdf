@@ -987,11 +987,16 @@ if (( DO_PDF )) && [[ $ENGINE == chrome ]]; then
 # Print an nbconvert HTML file to PDF by driving an installed Chrome-family
 # browser with playwright (temporary profile; the real one is never touched).
 import pathlib, sys
-from playwright.sync_api import Error, sync_playwright
+from playwright.sync_api import Error, TimeoutError, sync_playwright
 browser, html, pdf, timeout = sys.argv[1:5]
-# MathJax 2 typesets asynchronously: wait until its queue has drained
-MATHJAX_DONE = """() => new Promise(done => {
+# Scripts come from CDNs (MathJax, and for ipywidgets the widget renderer from
+# unpkg.com). A request that never completes (blocked or very slow CDN) must not
+# stall the export: wait this long for the network to go idle, then print anyway.
+NET_WAIT = 30
+# MathJax 2 typesets asynchronously: wait until its queue has drained (bounded)
+MATHJAX_DONE = """ms => new Promise(done => {
   if (!window.MathJax || !MathJax.Hub || !MathJax.Hub.Queue) return done(false);
+  setTimeout(() => done(false), ms);
   MathJax.Hub.Queue(() => done(true));
 })"""
 try:
@@ -1001,8 +1006,18 @@ try:
             page = b.new_page()
             page.set_default_timeout(float(timeout) * 1000)
             page.emulate_media(media="print")
-            page.goto(pathlib.Path(html).resolve().as_uri(), wait_until="networkidle")
-            page.evaluate(MATHJAX_DONE)
+            pending = set()
+            page.on("request", lambda r: pending.add(r))
+            page.on("requestfinished", lambda r: pending.discard(r))
+            page.on("requestfailed", lambda r: pending.discard(r))
+            page.goto(pathlib.Path(html).resolve().as_uri(), wait_until="commit")
+            try:
+                page.wait_for_load_state("networkidle", timeout=NET_WAIT * 1000)
+            except TimeoutError:
+                urls = sorted({r.url for r in pending})
+                print(f"pdf-warning: still loading after {NET_WAIT}s, printed without: "
+                      + (", ".join(urls) or "?"), file=sys.stderr)
+            page.evaluate(MATHJAX_DONE, NET_WAIT * 1000)
             page.pdf(path=pdf, print_background=True)   # no header/footer by default
         finally:
             b.close()
@@ -1016,6 +1031,7 @@ if (( DO_PDF )) && [[ $ENGINE == chrome-cli ]]; then
 # Print an nbconvert HTML file to PDF with an existing Chrome-family browser.
 import os, pathlib, signal, subprocess, sys, time
 browser, html, pdf, profile, timeout = sys.argv[1:6]
+NET_WAIT = 30
 page = pathlib.Path(html)
 # same as playwright's print_background=True: keep code-cell / table backgrounds
 css = "<style>*{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}</style>"
@@ -1027,6 +1043,10 @@ cmd = [browser, "--headless=new", "--disable-gpu", "--hide-scrollbars",
        f"--user-data-dir={profile}",           # throw-away profile: never touches your real one
        "--no-pdf-header-footer", "--print-to-pdf-no-header",   # new + old flag spelling
        "--virtual-time-budget=20000",          # let MathJax etc. finish before printing
+       # virtual time stands still while a request is pending, so a CDN script
+       # that never loads (e.g. the ipywidgets renderer from unpkg.com) would
+       # stall forever: stop loading after NET_WAIT real seconds and print as is
+       f"--timeout={NET_WAIT * 1000}",
        f"--print-to-pdf={pdf}", page.resolve().as_uri()]
 out = pathlib.Path(pdf)
 out.unlink(missing_ok=True)
@@ -1046,10 +1066,15 @@ def pdf_complete():
 
 # own process group, so the browser and all its helpers can be stopped together
 p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, start_new_session=True)
-deadline, rc = time.monotonic() + float(timeout), 1
+t0, rc = time.monotonic(), 1
+deadline = t0 + float(timeout)
 try:
     while True:
-        if pdf_complete(): rc = 0; break
+        if pdf_complete():
+            rc = 0
+            if time.monotonic() - t0 >= NET_WAIT:
+                print(f"pdf-warning: still loading after {NET_WAIT}s, printed as is", file=sys.stderr)
+            break
         if p.poll() is not None:
             rc = 0 if pdf_complete() else 1
             if rc: print(f"browser exited with status {p.returncode} and wrote no PDF", file=sys.stderr)
@@ -1361,6 +1386,8 @@ for (( i = 1; i <= total; i++ )); do
       if (( INTERRUPTED )); then PDF_ST[$nb]=interrupted; print -r -- "  ${Y}■ interrupted${N}"; break; fi
       if (( rc == 0 )); then
         PDF_ST[$nb]=ok; print -r -- "  ${G}✓ PDF${N} → $REPLY ($(elapsed $t0))"
+        command grep -q '^pdf-warning: ' -- $log &&
+          print -r -- "    ${Y}! some page resources (CDN scripts, e.g. for ipywidgets) did not load; PDF may lack them${N} — ${log#$PWD/}"
       else
         PDF_ST[$nb]=FAILED; print -r -- "  ${R}✗ PDF export failed${N}"; show_pdf_error $log
         print -r -- "    full log: ${log#$PWD/}"

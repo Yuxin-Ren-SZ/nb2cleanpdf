@@ -164,7 +164,8 @@ formulas and relative paths.
 
 - **chrome** (default via `auto`): `nbconvert --to html --template webpdf --embed-images`, then
   `pw_pdf.py` drives the installed browser with playwright (`launch(executable_path=…)`):
-  `goto(wait_until="networkidle")`, then waits for MathJax's queue to drain, then
+  `goto`, then waits for network idle (capped at 30 s), then for MathJax's queue to drain (same
+  cap), then
   `page.pdf(print_background=True)` (no header/footer by default), then `browser.close()`.
   - Why playwright: exact "page is ready" signal instead of a time budget, and a clean browser
     shutdown via CDP (the CLI printing hangs on Chrome 153, see below). Temporary profile, as always.
@@ -175,7 +176,7 @@ formulas and relative paths.
 - **chrome-cli**: same HTML, printed by `chrome_pdf.py` via the browser's own
   `--headless=new --print-to-pdf`, a temporary
   `--user-data-dir` (never the real profile; works while Chrome is open), no header/footer,
-  `--virtual-time-budget=20000` for MathJax, injected `print-color-adjust: exact`.
+  `--virtual-time-budget=20000` for MathJax, `--timeout=30000`, injected `print-color-adjust: exact`.
   - **Chrome may never exit after printing** (seen with Chrome 153 on macOS 27: the PDF is
     complete after ~1 s, the process hangs forever, for any flags/content). So `chrome_pdf.py`
     doesn't wait for the process: it polls until the PDF ends with `%%EOF` and its size is
@@ -190,6 +191,17 @@ formulas and relative paths.
 - nbconvert always writes to `$TMP/pdf/<i>/out.*`, then the PDF is moved (webpdf's extension is
   `.html`, so `--output name.pdf` would give `name.pdf.pdf`; dotted names get mangled).
   nbconvert runs inside the notebook's directory so relative image paths resolve.
+- **A stalled CDN must not stall the export.** The HTML pulls MathJax from cdnjs and, when the
+  notebook has ipywidgets state (nbclient stores it), the widget renderer from unpkg.com, which
+  loads further widget modules from there. A request that never completes (blocked CDN, e.g. in
+  mainland China) made playwright's `networkidle` wait for the full PDF timeout (300 s, then
+  fail) and chrome-cli wait forever (virtual time doesn't advance while a request is pending).
+  Both now stop waiting after 30 s real time and print what has rendered; the helper writes a
+  `pdf-warning:` line (playwright: with the pending URLs) and the run shows a one-line warning.
+  Not done: bundling the widget renderer (not shipped by ipywidgets/nbconvert), dropping widgets
+  (they render fine when the CDN answers). `webpdf` is nbconvert's own code and keeps its
+  `networkidle` wait (playwright's default navigation timeout, 30 s, should make it fail rather
+  than hang — not verified).
 - PDF export is skipped when execution failed. LaTeX failures show the deduplicated `! …` lines.
 
 ## Run bookkeeping

@@ -138,7 +138,10 @@ arrays. Unknown keys and anything else are errors.
 | `webpdf` | nbconvert + playwright's own Chromium | `nbconvert[webpdf]`, ~150 MB download (shared cache) |
 | `latex` | nbconvert + xelatex (no CJK support) | pandoc, a TeX distribution |
 
-Formulas are rendered with MathJax from a CDN, so PDF export needs network access.
+Formulas are rendered with MathJax from a CDN, and ipywidgets with the widget renderer from
+unpkg.com, so PDF export needs network access. With the `chrome` / `chrome-cli` engines a CDN
+that doesn't answer within 30 s doesn't stall the export: the page is printed without it (empty
+widget areas) and a warning is shown.
 
 ## Development
 

@@ -133,7 +133,9 @@ nb2cleanpdf --config ci.toml -e eda  # -e 会替换文件中的 exclude 列表
 | `webpdf` | nbconvert + playwright 自带的 Chromium | `nbconvert[webpdf]`，约 150 MB 下载（共享缓存） |
 | `latex` | nbconvert + xelatex（不支持中日韩文字） | pandoc 和 TeX 发行版 |
 
-公式由 CDN 上的 MathJax 渲染，所以导出 PDF 需要联网。
+公式由 CDN 上的 MathJax 渲染，ipywidgets 由 unpkg.com 上的 widget 渲染器渲染，所以导出 PDF 需要联网。
+使用 `chrome` / `chrome-cli` 引擎时，若 CDN 30 秒内没有响应，导出不会卡住：页面会在缺少这些资源的情况下
+照常打印（widget 区域为空），并给出警告。
 
 ## 开发
 
