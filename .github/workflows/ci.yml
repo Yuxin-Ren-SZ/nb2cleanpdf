@@ -97,3 +97,63 @@ jobs:
           path: |
             tests/.work/**/*.pdf
             tests/.work/**/logs/*.log
+
+  # Windows Subsystem for Linux. GitHub's Windows runners can't nest virtualisation,
+  # so this is WSL 1. The repo is checked out on the Windows side (/mnt/d/…); the
+  # suite runs from a copy in the Linux home, where WSL users keep their projects.
+  wsl:
+    name: test (${{ matrix.engine }}, wsl)
+    needs: lint
+    runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [none, chrome-cli]
+    defaults:
+      run:
+        shell: wsl-bash {0}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: Vampire/setup-wsl@v5
+        with:
+          distribution: Ubuntu-24.04
+          additional-packages: zsh curl ca-certificates fonts-noto-cjk
+
+      - name: install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: install Google Chrome
+        if: matrix.engine == 'chrome-cli'
+        run: |
+          curl -fsSLo /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo apt-get install -y -q /tmp/chrome.deb
+          google-chrome --version
+
+      - name: line endings survived the Windows checkout
+        run: |
+          if grep -lq $'\r' nb2cleanpdf install.sh tests/run-tests.zsh; then echo "CRLF found"; exit 1; fi
+
+      - name: run tests
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          rm -rf ~/nb2cleanpdf && cp -r . ~/nb2cleanpdf
+          cd ~/nb2cleanpdf && zsh tests/run-tests.zsh --engine ${{ matrix.engine }}
+
+      - name: collect PDFs and logs
+        if: always()
+        run: |
+          out=$PWD/wsl-out; rm -rf "$out"; mkdir "$out"
+          cd ~/nb2cleanpdf/tests 2>/dev/null || exit 0
+          find .work \( -name '*.pdf' -o -path '*/logs/*.log' \) -print0 | xargs -0 -r cp --parents -t "$out"
+
+      - name: upload PDFs and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nb2cleanpdf-${{ matrix.engine }}-wsl
+          include-hidden-files: true
+          if-no-files-found: ignore
+          path: |
+            wsl-out/**/*.pdf
+            wsl-out/**/logs/*.log
