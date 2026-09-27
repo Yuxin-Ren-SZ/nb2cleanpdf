@@ -118,7 +118,7 @@ jobs:
       - uses: Vampire/setup-wsl@v5
         with:
           distribution: Ubuntu-24.04
-          additional-packages: zsh curl ca-certificates fonts-noto-cjk
+          additional-packages: zsh curl ca-certificates python3-venv fonts-noto-cjk
 
       - name: install uv
         run: curl -LsSf https://astral.sh/uv/install.sh | sh
