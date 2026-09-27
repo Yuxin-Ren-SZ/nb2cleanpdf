@@ -183,7 +183,9 @@ formulas and relative paths.
 - **chrome-cli**: same HTML, printed by `chrome_pdf.py` via the browser's own
   `--headless=new --print-to-pdf`, a temporary
   `--user-data-dir` (never the real profile; works while Chrome is open), no header/footer,
-  `--virtual-time-budget=20000` for MathJax, `--timeout=30000`, injected `print-color-adjust: exact`.
+  `--virtual-time-budget=20000` for MathJax, `--timeout=30000`, injected `print-color-adjust: exact`,
+  `--no-sandbox` only when running as root (Chrome refuses to start otherwise; playwright never
+  uses the sandbox anyway).
   - **Chrome may never exit after printing** (seen with Chrome 153 on macOS 27: the PDF is
     complete after ~1 s, the process hangs forever, for any flags/content). So `chrome_pdf.py`
     doesn't wait for the process: it polls until the PDF ends with `%%EOF` and its size is
@@ -246,5 +248,8 @@ Trash when a `trash` command exists (macOS 15+: `/usr/bin/trash`), otherwise del
   and timeouts, dependency install (`y`, `n`, `--install-deps`, no TTY), `clean` after
   `kill -9` (BSD `ps`, `/usr/bin/trash`), Ctrl-C and the fzf picker (by the user).
 - Not verified on the Mac: webpdf and latex engines (covered by CI on Linux).
+- CI also runs `none` and `chrome-cli` under WSL (Ubuntu 24.04; WSL 1 — GitHub's Windows runners
+  can't nest virtualisation, so WSL 2 is untested). The job runs as root, the suite from a copy in
+  the Linux home. `.gitattributes` forces LF so a Windows-side checkout keeps working scripts.
 - 2026-09-23: chrome engine switched to playwright; verified on the Mac (Chrome exits cleanly,
   ~3 s per PDF), plus the missing-playwright install flow with an empty uv cache.

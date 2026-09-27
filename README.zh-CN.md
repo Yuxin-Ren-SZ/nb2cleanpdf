@@ -22,7 +22,7 @@
 - `nb2cleanpdf clean` 清理运行记录，以及被强行中断的运行留下的残余
 
 这是一个独立的单文件 zsh 脚本，面向 macOS（Linux 也能用；两者都在 CI 中测试）。
-不支持原生 Windows——WSL 可能可用，但未经测试。
+不支持原生 Windows，请使用 WSL（CI 中在 WSL 1 的 Ubuntu 上测试）。
 
 ## 安装
 
@@ -144,7 +144,8 @@ tests/run-tests.zsh --engine auto    # 在 tests/.work/ 建一个临时项目，
 tests/run-tests.zsh --engine none    # 跳过 PDF 导出（更快）
 ```
 
-CI（`.github/workflows/ci.yml`）在 Linux 上对每种引擎运行测试，在 macOS 上测试浏览器引擎；
+CI（`.github/workflows/ci.yml`）在 Linux 上对每种引擎运行测试，在 macOS 上测试浏览器引擎，
+在 WSL 下测试 `none` / `chrome-cli`；
 生成的 PDF 和日志会作为构建产物上传。
 
 设计决策及其原因见 [docs/DESIGN.md](docs/DESIGN.md)（英文）。

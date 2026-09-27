@@ -1048,6 +1048,9 @@ cmd = [browser, "--headless=new", "--disable-gpu", "--hide-scrollbars",
        # stall forever: stop loading after NET_WAIT real seconds and print as is
        f"--timeout={NET_WAIT * 1000}",
        f"--print-to-pdf={pdf}", page.resolve().as_uri()]
+# Chrome refuses to start as root with its sandbox on (Docker, WSL/CI root users);
+# playwright (chrome engine) always runs it without one
+if os.geteuid() == 0: cmd.insert(1, "--no-sandbox")
 out = pathlib.Path(pdf)
 out.unlink(missing_ok=True)
 
