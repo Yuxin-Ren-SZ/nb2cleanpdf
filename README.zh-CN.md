@@ -24,6 +24,8 @@
 这是一个独立的单文件 zsh 脚本，面向 macOS（Linux 也能用；两者都在 CI 中测试）。
 不支持原生 Windows，请使用 WSL（CI 中在 WSL 1 的 Ubuntu 上测试）。
 
+![nb2cleanpdf：在 fzf 中选择 notebook，重新运行并导出 PDF](docs/images/demo.gif)
+
 ## 安装
 
 ```zsh
@@ -76,6 +78,20 @@ nb2cleanpdf -V                       # 查看已安装的版本
 
 **只运行你信任的 notebook。** 每个代码单元都以当前用户的权限执行，与 Jupyter 中的 *Run All*
 完全相同——没有任何沙箱隔离。处理来源不明的 notebook 之前，请先检查其中的代码。
+
+### 界面预览
+
+选择 notebook——默认全部选中；右侧预览显示每个 notebook 的单元格：
+
+![带 notebook 预览的 fzf 选择器](docs/images/picker.png)
+
+逐个重新运行 notebook，显示实时进度，然后导出 PDF：
+
+![notebook 执行时的进度行](docs/images/run.png)
+
+运行失败的 notebook 保持原样不动，并显示错误信息，最后给出汇总：
+
+![错误输出与运行汇总](docs/images/summary.png)
 
 ## 运行环境
 
@@ -147,6 +163,9 @@ tests/run-tests.zsh --engine none    # 跳过 PDF 导出（更快）
 CI（`.github/workflows/ci.yml`）在 Linux 上对每种引擎运行测试，在 macOS 上测试浏览器引擎，
 在 WSL 下测试 `none` / `chrome-cli`；
 生成的 PDF 和日志会作为构建产物上传。
+
+上面的 GIF 和截图用 [vhs](https://github.com/charmbracelet/vhs) 录制：
+`docs/demo/record.zsh` 会创建演示项目并回放 `docs/demo/demo.tape`。
 
 设计决策及其原因见 [docs/DESIGN.md](docs/DESIGN.md)（英文）。
 
