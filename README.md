@@ -25,6 +25,8 @@ choose), then exported to PDF (into `PDF/`).
 It's a single self-contained zsh script for macOS (Linux works too; both are tested in CI).
 Windows is not supported natively — WSL may work but is untested.
 
+![nb2cleanpdf: pick notebooks in fzf, re-run them, export PDFs](docs/images/demo.gif)
+
 ## Install
 
 ```zsh
@@ -79,6 +81,20 @@ matches the whole relative path; a glob without `/` matches the file name.
 **Only run notebooks you trust.** Every code cell is executed with your user's permissions,
 exactly like *Run All* in Jupyter — there is no sandbox. Look through notebooks from
 unknown sources before processing them.
+
+### What it looks like
+
+Pick notebooks — all start selected; the preview shows each notebook's cells:
+
+![fzf picker with notebook preview](docs/images/picker.png)
+
+Each notebook is re-run with a live progress line, then exported:
+
+![progress while a notebook executes](docs/images/run.png)
+
+A failing notebook is left untouched; its error is shown, followed by a summary:
+
+![error output and run summary](docs/images/summary.png)
 
 ## Environments
 
@@ -152,6 +168,9 @@ tests/run-tests.zsh --engine none    # skip PDF export (fast)
 
 CI (`.github/workflows/ci.yml`) runs the suite for every engine on Linux and the
 browser engines on macOS; PDFs and logs are uploaded as build artifacts.
+
+The GIF and screenshots above are recorded with [vhs](https://github.com/charmbracelet/vhs):
+`docs/demo/record.zsh` builds the demo project and replays `docs/demo/demo.tape`.
 
 Design decisions and their reasons: [docs/DESIGN.md](docs/DESIGN.md).
 
