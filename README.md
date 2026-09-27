@@ -23,7 +23,7 @@ choose), then exported to PDF (into `PDF/`).
 - `nb2cleanpdf clean` removes run records and whatever a killed run left behind
 
 It's a single self-contained zsh script for macOS (Linux works too; both are tested in CI).
-Windows is not supported natively — WSL may work but is untested.
+Windows is not supported natively; use WSL (tested in CI with Ubuntu on WSL 1).
 
 ## Install
 
@@ -150,8 +150,8 @@ tests/run-tests.zsh --engine auto    # builds a scratch project in tests/.work/ 
 tests/run-tests.zsh --engine none    # skip PDF export (fast)
 ```
 
-CI (`.github/workflows/ci.yml`) runs the suite for every engine on Linux and the
-browser engines on macOS; PDFs and logs are uploaded as build artifacts.
+CI (`.github/workflows/ci.yml`) runs the suite for every engine on Linux, the
+browser engines on macOS, and `none` / `chrome-cli` under WSL; PDFs and logs are uploaded as build artifacts.
 
 Design decisions and their reasons: [docs/DESIGN.md](docs/DESIGN.md).
 
