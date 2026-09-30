@@ -53,7 +53,7 @@ git clone https://github.com/Yuxin-Ren-SZ/nb2cleanpdf && cd nb2cleanpdf
 （除非加 `--force`）；bin 目录不在 `PATH` 里时会提醒你。
 
 运行要求：zsh、[uv](https://docs.astral.sh/uv/)，以及项目中由 uv 创建的 `.venv`——也可以用其他环境，
-见[运行环境](#运行环境)。
+见[运行环境](#运行环境)；使用 `--no-exec` 时完全不需要环境。
 其他依赖（jupyter、fzf 等）都会在启动时检查，并给出对应的安装命令。
 
 ## 用法
@@ -63,6 +63,7 @@ cd my-research-project
 nb2cleanpdf                          # 选择 notebook，重新运行，导出 PDF 到 ./PDF/
 nb2cleanpdf ~/research/other-proj    # 在任何位置处理另一个项目
 nb2cleanpdf -n                       # 只列出将要处理的 notebook
+nb2cleanpdf --no-exec                # 按原样导出：不重新运行，也不需要任何环境
 nb2cleanpdf -i 'analysis/*' -e '(#i)*draft*' -o ~/Desktop/pdfs -t 900
 nb2cleanpdf -o .                     # PDF 放在每个 notebook 旁边，而不是 PDF/
 nb2cleanpdf clean -n                 # 查看残余文件；`nb2cleanpdf clean` 进行清理
@@ -112,6 +113,8 @@ nb2cleanpdf --env conda ~/miniforge3/envs/x  # …或按路径
   你同意后才执行（或使用 `--install-deps`）。
 - 如果环境不存在或类型不对，nb2cleanpdf 会停止并给出应改用的命令，绝不会自动换用其他环境。
 - `chrome` PDF 引擎仍然需要 uv（playwright 从 uv 的缓存中运行）。
+- `--no-exec` 按 notebook 当前保存的输出直接导出，完全不使用任何环境：nbconvert 从 uv 的缓存中运行，
+  所以在没有 venv 的目录里也能用。
 
 ## 配置文件
 

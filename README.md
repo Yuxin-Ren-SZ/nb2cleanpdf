@@ -54,7 +54,8 @@ The installer only writes `<bin-dir>/nb2cleanpdf`, never overwrites a file that 
 nb2cleanpdf (unless `--force`), and tells you if the bin dir is not on your `PATH`.
 
 Requirements: zsh, [uv](https://docs.astral.sh/uv/), and a uv-created `.venv` in the
-project — or another environment, see [Environments](#environments). Everything else (jupyter, fzf, …) is checked at start-up, with the command that
+project — or another environment, see [Environments](#environments); none at all with
+`--no-exec`. Everything else (jupyter, fzf, …) is checked at start-up, with the command that
 installs it.
 
 ## Usage
@@ -64,6 +65,7 @@ cd my-research-project
 nb2cleanpdf                          # pick notebooks, re-run them, export PDFs to ./PDF/
 nb2cleanpdf ~/research/other-proj    # same for another project, from anywhere
 nb2cleanpdf -n                       # just list what would be processed
+nb2cleanpdf --no-exec                # export as they are: no re-run, no environment needed
 nb2cleanpdf -i 'analysis/*' -e '(#i)*draft*' -o ~/Desktop/pdfs -t 900
 nb2cleanpdf -o .                     # PDFs next to each notebook instead of PDF/
 nb2cleanpdf clean -n                 # show leftovers; `nb2cleanpdf clean` removes them
@@ -116,6 +118,8 @@ nb2cleanpdf --env conda ~/miniforge3/envs/x  # …or by prefix
 - If the environment doesn't exist or is of another kind, nb2cleanpdf stops and prints
   the command to use instead; it never falls back to another environment.
 - The `chrome` PDF engine still needs uv (it runs playwright from uv's cache).
+- `--no-exec` exports the notebooks as they are (their saved outputs) and uses no environment
+  at all: nbconvert runs from uv's cache, so it also works in a folder without a venv.
 
 ## Config file
 
