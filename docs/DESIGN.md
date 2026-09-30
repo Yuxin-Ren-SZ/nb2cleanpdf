@@ -16,6 +16,8 @@
 9. A `clean` command that checks for leftovers, then removes them.
 10. PDFs go to `PDF/` in the project by default (`-o DIR` to change); the project can be
     given as an argument, and the script works from wherever it is installed.
+11. `--no-exec` only finds the notebooks and exports them as they are — no re-run and no
+    environment check at all.
 
 Name: `nb2cleanpdf` (was `nbrerun`) — the goal is a clean PDF of each notebook.
 
@@ -28,7 +30,7 @@ formulas and relative paths.
 2. Manual `while/case` argument parser (predictable `--opt=val`, clear errors; not `zparseopts`).
 3. Shared helpers: `discover`, `matches_any`, `filter_notebooks`.
 4. `clean` subcommand — runs and exits **before** venv/dependency checks, so it works anywhere.
-5. uv venv validation.
+5. Environment validation (skipped with `--no-exec`).
 6. Dependency registry, check → report → prompt → install loop, engine resolution, `--sync`.
 7. Discover + filter, dry-run exit.
 8. `$TMP` workspace, traps, embedded Python helpers (`preview.py`, `exec.py`, `pw_pdf.py`,
@@ -58,8 +60,25 @@ formulas and relative paths.
   conda: `<mgr> install -y -p PREFIX -c conda-forge` (`nbconvert[webpdf]` → `nbconvert-webpdf`).
   `-y` is fine because nb2cleanpdf already shows the command and asks. No manager found → the
   command is shown with `conda` but not auto-run.
-- uv is needed only for uv envs / pip-less venvs and for the `chrome` engine (playwright runs
-  from uv's cache on the env's interpreter). `--sync` is uv-only (error otherwise).
+- uv is needed only for uv envs / pip-less venvs, for the `chrome` engine (playwright runs
+  from uv's cache on the env's interpreter) and for `--no-exec`. `--sync` is uv-only (error otherwise).
+
+## `--no-exec`
+
+- Discover and export only: no environment is looked up, validated or activated — a missing or
+  broken `.venv`, or a conda name no manager knows, doesn't matter. Exporting saved outputs needs
+  nothing from the project's packages (nbconvert only renders what's stored).
+- nbconvert runs from a **uv tool env** in uv's cache: `uv tool run --from nbconvert`
+  (`nbconvert[webpdf]` for webpdf; plus `--with 'playwright>=1.49'` for chrome, so `pw_pdf.py`
+  runs in the same env). The dependency check runs it `--offline` and takes its
+  `sys.executable` as `PY` for nbconvert and the helpers; if it isn't cached, that's a missing
+  dependency with the (online) command, as usual.
+- Not `uv run --no-project --with …`: it layers the ephemeral env over a `.venv` found in the
+  cwd or a parent (or an active `VIRTUAL_ENV`), putting the project's packages on `sys.path`.
+  `uv tool run` ignores virtual environments (checked with uv 0.12.6).
+- `--sync` with `--no-exec` is an error (it only prepares the environment); `--env` / `--venv`
+  on the command line are ignored with a warning; `env` in a config file is ignored silently
+  (a config holds defaults, `--no-exec` is a one-shot).
 
 ## Config file (`--config`)
 

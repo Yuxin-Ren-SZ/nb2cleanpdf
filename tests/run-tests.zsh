@@ -113,6 +113,7 @@ nbr -n --timeout abc;            check "bad --timeout rejected"             '(( 
 nbr -n --engine nope;            check "bad --engine rejected"              '(( RC == 1 ))'
 nbr -n --keep 1;                 check "--keep outside clean rejected"      '(( RC == 1 ))'
 nbr --no-exec --no-pdf;          check "--no-exec --no-pdf rejected"        '(( RC == 1 ))'
+nbr -n --no-exec --sync;         check "--no-exec --sync rejected"          '(( RC == 1 )) && has "none with --no-exec"'
 
 # ---------- install script -------------------------------------------------------
 section "install script"
@@ -178,6 +179,12 @@ cd $V/none;  nbr -y;  check "missing venv is an error"          '(( RC == 1 )) &
 cd $V/notuv; nbr -y;  check "non-uv venv is an error"           '(( RC == 1 )) && has "not created by uv"'
 cd $V/empty; nbr -y --no-pdf
 check "missing deps listed with install command" '(( RC == 1 )) && has "uv pip install --python .venv jupyter" && has "no TTY"'
+# --no-exec: no environment is used, so neither a missing nor a broken one matters
+cd $V/none;  nbr -n --no-exec; check "--no-exec needs no venv"   '(( RC == 0 )) && (( $(listed) == 1 ))'
+if [[ $ENGINE != none ]]; then
+  cd $V/notuv; nbr -y --no-exec $PDFARGS
+  check "--no-exec exports without the venv" '(( RC == 0 )) && is_pdf PDF/intro.pdf && ! has "not created by uv"'
+fi
 cd $P
 
 # ---------- environments (--env) ---------------------------------------------------
@@ -226,6 +233,7 @@ nbr -n --env=uv:$E/lv;           check "uv env not made by uv suggests local" '(
 nbr -n --env local $E/fc;        check "local env that is conda suggests conda" '(( RC == 1 )) && has "--env conda"'
 nbr -n --env conda $E/lv;        check "conda env that is a venv suggests local" '(( RC == 1 )) && has "--env local"'
 nbr -n --env local $E/nope;      check "missing local env is an error"      '(( RC == 1 )) && has "no virtualenv found"'
+nbr -n --no-exec --env local $E/nope; check "--no-exec ignores --env"       '(( RC == 0 )) && has "ignored with --no-exec"'
 
 nbr -y --no-pdf --env local $E/lv
 check "local venv (no pip) runs"             '(( RC == 0 )) && has_line env.ipynb "prefix=$E/lv" && has_line env.ipynb "VIRTUAL_ENV=$E/lv"'
