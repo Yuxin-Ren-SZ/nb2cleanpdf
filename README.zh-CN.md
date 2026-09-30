@@ -36,7 +36,7 @@ curl -fsSL https://raw.githubusercontent.com/Yuxin-Ren-SZ/nb2cleanpdf/main/insta
 [发布版本](https://github.com/Yuxin-Ren-SZ/nb2cleanpdf/releases)，加上 `--version`：
 
 ```zsh
-curl -fsSL https://raw.githubusercontent.com/Yuxin-Ren-SZ/nb2cleanpdf/main/install.sh | sh -s -- --version 0.3.1
+curl -fsSL https://raw.githubusercontent.com/Yuxin-Ren-SZ/nb2cleanpdf/main/install.sh | sh -s -- --version 0.4.0
 ```
 
 或者从克隆的仓库安装：
